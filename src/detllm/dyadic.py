@@ -22,6 +22,25 @@ from .intmath import (
 
 I64 = torch.int64
 
+_CONST_CACHE: dict = {}
+
+
+def _const(v: int, device) -> torch.Tensor:
+    """Cached device scalar (CUDA-graph capture forbids per-call H2D copies).
+
+    Never cache while tracing/compiling: dynamo calls this with fake-tensor
+    mode active, and a cached FakeTensor served to real execution corrupts
+    everything downstream. Inside compiled code the constant is baked by
+    inductor anyway."""
+    if torch.compiler.is_compiling():
+        return torch.tensor(v, dtype=I64, device=device)
+    key = (v, str(device))
+    t = _CONST_CACHE.get(key)
+    if t is None:
+        t = torch.tensor(v, dtype=I64, device=device)
+        _CONST_CACHE[key] = t
+    return t
+
 
 def scaled_round_div(num: torch.Tensor, den: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
     """round(num · 2^e / den) with per-element (possibly negative) e. int64."""
@@ -39,7 +58,7 @@ def fit_dyadic_ratio(num: torch.Tensor, den, bits: int = 16):
     """
     num = num.to(I64)
     if not isinstance(den, torch.Tensor):
-        den = torch.tensor(den, dtype=I64, device=num.device)
+        den = _const(den, num.device)
     den = den.to(I64).broadcast_to(num.shape)
     L = ilog2_floor(num) - ilog2_floor(den)
     e = (bits - 1) - L
@@ -132,9 +151,9 @@ def requant_i8_static(P: torch.Tensor, row_m, row_k, col_m, col_k: int,
     a single fused rounding.
     """
     if not isinstance(s_m, torch.Tensor):
-        s_m = torch.tensor(s_m, dtype=I64, device=P.device)
+        s_m = _const(s_m, P.device)
     if not isinstance(s_k, torch.Tensor):
-        s_k = torch.tensor(s_k, dtype=I64, device=P.device)
+        s_k = _const(s_k, P.device)
     num = P.to(I64) * col_m.to(I64) * row_m.to(I64)
     shift = (row_k.to(I64) + col_k - s_k).broadcast_to(num.shape)
     up = torch.clamp(-shift, min=0)

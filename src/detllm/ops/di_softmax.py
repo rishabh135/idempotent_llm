@@ -41,7 +41,8 @@ def di_softmax(scores: torch.Tensor, m: torch.Tensor, k: torch.Tensor,
     x = scores.to(I64)
     m = m.to(I64)
     k = k.to(I64)
-    neg_inf = torch.tensor(torch.iinfo(I64).min + 1, dtype=I64, device=x.device)
+    from ..dyadic import _const
+    neg_inf = _const(torch.iinfo(I64).min + 1, x.device)
     xm = torch.where(valid, x, neg_inf)
     row_max = xm.amax(dim=-1, keepdim=True)
     any_valid = valid.any(dim=-1, keepdim=True)

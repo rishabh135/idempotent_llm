@@ -70,11 +70,19 @@ class KVCache:
     v8: list = field(default_factory=list)
     valid: torch.Tensor | None = None          # [B, S] bool (S == length)
     length: int = 0
+    # CUDA-graph static mode: fixed capacity, device-tensor write offset.
+    static_cap: int = 0
+    len_idx: torch.Tensor | None = None        # [1] int64, device
 
     def seq_len(self) -> int:
         return self.length
 
     def append(self, li: int, k8: torch.Tensor, v8: torch.Tensor):
+        if self.static_cap:
+            # graph-capturable write at a device-tensor offset
+            self.k8[li].index_copy_(2, self.len_idx, k8)
+            self.v8[li].index_copy_(2, self.len_idx, v8)
+            return
         B, n_kv, T, hd = k8.shape
         if len(self.k8) <= li:
             cap = max(256, T)
@@ -154,6 +162,13 @@ class IntQwen3:
             lw.attn_out_col_m = per_q_head.repeat_interleave(self.hd)  # [n_q*hd]
             lw.attn_out_col_k = vk_shared + (P_OUT_BITS - 1)  # probs k
             self.layers.append(lw)
+        self._layer_compiled = None  # set by enable_layer_cudagraphs()
+        # device scalar constants (CUDA-graph capture forbids H2D copies, so
+        # nothing on the forward path may build tensors from python ints)
+        self._one1 = torch.ones(1, dtype=I64, device=dev)
+        self._k_rowk = [torch.tensor(OUT_FRAC_BITS + Lc2["k_norm_k"], dtype=I64,
+                                     device=dev)
+                        for Lc2 in c["layers"]]
 
     # -- helpers ----------------------------------------------------------
 
@@ -212,6 +227,7 @@ class IntQwen3:
         chunk_valid = chunk_valid.to(dev)
         if cache is None:
             cache = KVCache()
+        static = cache.static_cap > 0
         S_past = cache.seq_len()
 
         # embedding lookup → residual grid
@@ -220,17 +236,46 @@ class IntQwen3:
         ek = self.embed_k[ids].unsqueeze(-1)
         h, k_res = dy.residual_from_delta(e8.to(torch.int32), em, ek)
 
-        valid_all = chunk_valid if cache.valid is None else torch.cat(
-            [cache.valid, chunk_valid], dim=1)        # [B, S]
-        cache.valid = valid_all
-        S = valid_all.shape[1]
-        # slot-causal mask for this chunk's queries: query i sees slots ≤ S_past+i
-        slot = torch.arange(S, device=dev)
-        causal = slot[None, :] <= (S_past + torch.arange(T, device=dev))[:, None]  # [T, S]
-        mask = valid_all[:, None, None, :] & causal[None, None, :, :]  # [B, 1, T, S]
+        if static:
+            # CUDA-graph decode: attention runs over the full static capacity;
+            # the valid buffer masks unwritten slots (exact zeros), and for
+            # T == 1 causality is implied (only past+self slots are valid).
+            assert T == 1
+            S = cache.static_cap
+            mask = cache.valid[:, None, None, :]      # [B, 1, 1, cap]
+        else:
+            valid_all = chunk_valid if cache.valid is None else torch.cat(
+                [cache.valid, chunk_valid], dim=1)    # [B, S]
+            cache.valid = valid_all
+            S = valid_all.shape[1]
+            # slot-causal mask: chunk query i sees slots ≤ S_past+i
+            slot = torch.arange(S, device=dev)
+            causal = slot[None, :] <= (S_past + torch.arange(T, device=dev))[:, None]
+            mask = valid_all[:, None, None, :] & causal[None, None, :, :]  # [B,1,T,S]
 
-        group = self.n_q // self.n_kv
+        layer_fn = self._layer_compiled if (static and self._layer_compiled
+                                            is not None) else self._layer
         for li, L in enumerate(self.layers):
+            h, k_res = layer_fn(li, L, h, k_res, mask, positions, cache)
+
+        if not static:
+            cache.length = S
+
+        # final norm + LM head
+        x8, xm, xk = self._norm_quant(h, k_res)
+        logits = self._lm_head(x8, xm, xk)  # [B, T, vocab] int32
+        return logits, xm, xk, cache
+
+    def _layer(self, li, L, h, k_res, mask, positions, cache):
+        """One transformer layer (attention + MLP), residual in/out.
+
+        Pure tensor computation apart from the cache K/V write (index_copy_
+        in static mode). Compiled per-layer in static decode mode."""
+        dev = self.device
+        B, T = h.shape[0], h.shape[1]
+        S = mask.shape[-1]
+        group = self.n_q // self.n_kv
+        if True:
             # ---- attention ----
             x8, xm, xk = self._norm_quant(h, k_res, L.as_m, L.as_k)
             Pq = int_gemm(x8, L.q_w8t, self.backend)
@@ -256,8 +301,7 @@ class IntQwen3:
             # K: static per-(head, channel) int8 (c folded; quantized ONCE
             # here, straight into cache)
             k8 = dy.requant_i8_static(
-                kk, torch.ones(1, dtype=I64, device=dev), torch.tensor(kkk, dtype=I64, device=dev),
-                torch.ones(1, dtype=I64, device=dev), 0,
+                kk, self._one1, self._k_rowk[li], self._one1, 0,
                 L.kq_m.view(1, self.n_kv, 1, self.hd),
                 L.kq_k.view(1, self.n_kv, 1, self.hd))
             # V: static per-head int8 from the GEMM output directly
@@ -319,17 +363,35 @@ class IntQwen3:
             d, dm, dk = dy.requant_i32_common(Pd, y8m, y8k, L.down_m, L.down_k,
                                               target_bits=20)
             h, k_res = dy.residual_add(h, k_res, d, dm, dk)
-
-        cache.length = S
-
-        # final norm + LM head
-        x8, xm, xk = self._norm_quant(h, k_res)
-        logits = self._lm_head(x8, xm, xk)  # [B, T, vocab] int32
-        return logits, xm, xk, cache
+        return h, k_res
 
     def _lm_head(self, x8, xm, xk):
         """Seam for diagnostics; xm/xk unused on the integer path."""
         return int_gemm(x8, self.head_w8t, self.backend)
+
+    def enable_layer_cudagraphs(self):
+        """§10 phase 2: compile the per-layer function with inductor-managed
+        CUDA graphs (mode='reduce-overhead') for static-shape decode. Weights
+        are marked static-address so the graphs reference them in place (28
+        small graphs, one per layer, replayed each step). Bit-exactness is
+        the §9.3 contract, re-verified by TestGraphedDecode."""
+        import dataclasses
+        # each layer specializes guards on its own scalar constants -> 28
+        # intentional "recompiles" of _layer (one graph per layer)
+        torch._dynamo.config.cache_size_limit = max(
+            torch._dynamo.config.cache_size_limit, 128)
+        if hasattr(torch._dynamo.config, "recompile_limit"):
+            torch._dynamo.config.recompile_limit = max(
+                torch._dynamo.config.recompile_limit, 128)
+        for lw in self.layers:
+            for f in dataclasses.fields(lw):
+                v = getattr(lw, f.name)
+                if isinstance(v, torch.Tensor):
+                    torch._dynamo.mark_static_address(v)
+        for t in (self._one1, *self._k_rowk):
+            torch._dynamo.mark_static_address(t)
+        self._layer_compiled = torch.compile(self._layer, mode="reduce-overhead",
+                                             dynamic=False)
 
     def _attn_scores(self, q8, qm, qk, K8r, L, group, aux=None):
         """Seam: int8 Q·Kᵀ with per-row dyadic score scale."""
@@ -357,9 +419,12 @@ class IntQwen3:
     @torch.no_grad()
     def generate(self, ids: torch.Tensor, max_new: int, guard: bool = False,
                  chunk_valid: torch.Tensor | None = None,
-                 stop_at_eos: bool = False):
+                 stop_at_eos: bool = False, use_graph: bool = False):
         """Greedy generation. ids int64 [B, T0] (right-padded, pads marked
-        False in chunk_valid). Returns (tokens [B, max_new], step_logits list)."""
+        False in chunk_valid). Returns (tokens [B, max_new], step_logits list).
+
+        use_graph: CUDA-graph the decode loop (cuda backend only) —
+        bit-identical to the eager loop (see graphed.py)."""
         dev = self.device
         ids = ids.to(dev)
         B, T0 = ids.shape
@@ -373,6 +438,15 @@ class IntQwen3:
         out = []
         cur = self.greedy_pick(step_logits[0])
         out.append(cur)
+        if use_graph and self.backend == "cuda" and max_new > 1:
+            from .graphed import GraphedDecode
+            gd = GraphedDecode(self, cache, lens)
+            for step in range(1, max_new):
+                lg_row = gd.step(cur).clone()  # buffer is reused per replay
+                step_logits.append(lg_row)
+                cur = self.greedy_pick(lg_row)
+                out.append(cur)
+            return torch.stack(out, dim=1), step_logits
         for step in range(1, max_new):
             pos = (lens + step - 1).unsqueeze(1)           # [B, 1]
             lg, _, _, cache = self.forward(cur.unsqueeze(1), pos, cache,
