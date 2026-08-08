@@ -80,14 +80,22 @@ QUAL_PROMPTS = [
 
 
 def run_qual():
+    # all 20 prompts in ONE batch (batch invariance is proven, so this is
+    # bit-identical to running them one at a time — and ~20x fewer steps)
     from detllm.model import IntQwen3
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
     model = IntQwen3(ART, backend="cuda")
-    for p in QUAL_PROMPTS:
-        ids = tok(p, return_tensors="pt").input_ids
-        toks, _ = model.generate(ids.cuda(), 200)
-        text = tok.decode(toks[0], skip_special_tokens=True)
+    seqs = [tok(p, return_tensors="pt").input_ids[0] for p in QUAL_PROMPTS]
+    B, T = len(seqs), max(len(s) for s in seqs)
+    ids = torch.zeros(B, T, dtype=torch.int64)
+    valid = torch.zeros(B, T, dtype=torch.bool)
+    for i, s in enumerate(seqs):
+        ids[i, : len(s)] = s
+        valid[i, : len(s)] = True
+    toks, _ = model.generate(ids.cuda(), 200, chunk_valid=valid.cuda())
+    for i, p in enumerate(QUAL_PROMPTS):
+        text = tok.decode(toks[i], skip_special_tokens=True)
         print(f"\n=== {p!r}\n{p}{text}")
 
 

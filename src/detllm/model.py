@@ -259,7 +259,9 @@ class IntQwen3:
             V8r = V8.repeat_interleave(group, dim=1)
             aux = {"li": li, "q": aux_q, "qkk": qkk - L.qs_k, "kk": kk,
                    "kkk": kkk, "Pv": Pv, "xm": xm, "xk": xk, "L": L}
-            CH = T if T <= 2048 else 512
+            # bound the int64 softmax temporaries: B·n_q·CH·S ≲ 2^27 elements
+            budget = max(1, (1 << 27) // max(1, B * self.n_q * S))
+            CH = T if T <= budget else max(128, budget)
             attn_parts = []
             for qlo in range(0, T, CH):
                 qhi = min(qlo + CH, T)

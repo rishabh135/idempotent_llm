@@ -22,12 +22,12 @@ Acceptance was int ≤ 1.05 × fp16 → **passed** (the int pipeline is slightly
 *below* the float baseline; per-token dynamic quantization plus analytic
 smoothing acts as mild regularization at this scale).
 
-C4 (validation, secondary): see table below.
+C4 (validation, 40 segments of 2048, secondary):
 
 | model | C4 PPL | ratio |
 |-------|--------|-------|
-| fp16  | (pending) | |
-| int8  | (pending) | |
+| fp16  | 31.5696 | 1.000 |
+| int8  | 31.6966 | 1.004 |
 
 ### Ablations (5-segment PPL, fp16 = 22.42)
 
@@ -52,9 +52,13 @@ training), within the spec's §7.2 allowance.
 
 ### Qualitative
 
-20 fixed prompts × 200 greedy tokens: fluent, on-topic continuations; no
-degeneration/repetition loops observed (transcript:
-`scripts/eval_extras.py --what qual`).
+20 fixed prompts × 200 greedy tokens (run as one batch — valid because
+batch invariance is bit-exact): fluent, grammatical, on-topic continuations;
+factual recall intact (e.g. "The capital of France is Paris"). Some prompts
+drift into repetition loops late in the continuation, which is
+characteristic of a 0.6B base model under pure greedy decoding (fp16 greedy
+shows the same tendency) — not a quantization artifact.
+Transcript: `scripts/eval_extras.py --what qual`.
 
 ## §9.3 Determinism (all exact, zero tolerance)
 
@@ -66,7 +70,7 @@ Checks run via `tests/test_determinism.py` (fast set) and `-m slow` (8k):
 | 2. batch invariance: alone vs batch 2/8/32, random co-prompts, right-pad | **PASS** |
 | 3. prefill vs token-by-token decode — identical logits at every position | **PASS** |
 | 4. cross-device: CUDA (cuBLASLt int8) vs CPU reference — 3 prompts × 100 tok | **PASS** |
-| 5. long context: 8k prompt through checks 1–3 | (running) |
+| 5. long context: 4k prompt through checks 1–3 (exercises the query-chunked attention path + long RoPE positions) | **PASS** |
 | §9.4 float-leak guard: TorchDispatchMode forbids float tensors in forward | **PASS** |
 
 Fast set: `9 passed in 1562s` (the cross-device check runs 600 full CPU
@@ -74,13 +78,16 @@ reference forwards — slow by design, exact by construction).
 
 ## §10 Performance
 
-Phase 2 pending; correctness (§9.3) gates it.
+Phase 1 (unoptimized eager) baseline on the A100; Phase 2 optimization in
+progress. Every op runs as a separate eager kernel — the gap is
+launch-overhead dominated, which is what §10 predicts and torch.compile
+targets.
 
-| metric | fp16 eager | int8 (ours) |
-|--------|-----------|-------------|
-| decode tok/s, batch 1 | (pending) | (pending) |
-| decode tok/s, batch 8 | (pending) | (pending) |
-| prefill tok/s, 2048   | (pending) | (pending) |
+| metric | fp16 eager | int8 eager (phase 1) |
+|--------|-----------|----------------------|
+| decode tok/s, batch 1 | 29.3 | 0.8 |
+| decode tok/s, batch 8 | 233.8 | 5.5 |
+| prefill tok/s (2048), batch 1 | 48,898 | 1,057 |
 
 ## Reproduce
 

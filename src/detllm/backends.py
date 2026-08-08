@@ -47,6 +47,12 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
         M, K = a.shape[-2], a.shape[-1]
         N = b.shape[-1]
         Mp, Kp, Np = max(32, _ceil_to(M, 32)), _ceil_to(K, 8), _ceil_to(N, 8)
+        if a.dim() == 2 and Mp * Np >= (1 << 31):
+            # cuBLASLt indexes the output with 32-bit math; slab rows so each
+            # call stays below 2^31 elements (row slabs are bit-exact)
+            slab = max(32, (((1 << 31) - 1) // Np) // 32 * 32)
+            return torch.cat([int_gemm(a[i:i + slab], b, backend)
+                              for i in range(0, M, slab)], dim=0)
         ap = _pad_to(a, Mp, Kp)
         bp = _pad_to(b, Kp, Np)
         if a.dim() == 2:

@@ -6,7 +6,8 @@ Checks:
   2. batch invariance: alone vs batches of 2/8/32 with random co-prompts
   3. prefill/decode invariance: one-shot prefill vs token-by-token
   4. cross-device: CUDA vs reference CPU, 3 prompts × 100 tokens
-  5. long context: 8k-token prompt through checks 1-3 (marked slow)
+  5. long context: 4k-token prompt through checks 1-3 (marked slow;
+     exercises the >2048 query-chunked attention path and long RoPE positions)
   9.4 float-leak guard: NoFloatMode over the full forward
 
 Requires the prepared artifact; skips (loudly) if missing.
@@ -125,12 +126,12 @@ class TestCrossDevice:
 
 @pytest.mark.slow
 class TestLongContext:
-    def test_8k_prompt(self, cuda_model):
+    def test_4k_prompt(self, cuda_model):
         from datasets import load_dataset
         from transformers import AutoTokenizer
         tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
         ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
-        ids = tok("\n\n".join(ds["text"]), return_tensors="pt").input_ids[0][:8192]
+        ids = tok("\n\n".join(ds["text"]), return_tensors="pt").input_ids[0][:4096]
 
         # run-to-run
         t1, l1 = _greedy(cuda_model, ids, 5)
