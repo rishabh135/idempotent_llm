@@ -13,9 +13,14 @@ import torch
 ART = "artifacts/qwen3-0.6b-int8"
 
 
-def bench_int(batch, prompt_len, decode_steps, prefill_len):
+def bench_int(batch, prompt_len, decode_steps, prefill_len, compiled=False):
+    if compiled:
+        from detllm.compile import compile_ops
+        compile_ops()
     from detllm.model import IntQwen3
     model = IntQwen3(ART, backend="cuda")
+    if compiled:  # trigger compilation outside the timed region
+        model.generate(torch.randint(100, 50000, (batch, prompt_len)).cuda(), 3)
     g = torch.Generator().manual_seed(0)
     ids = torch.randint(100, 50000, (batch, prompt_len), generator=g).cuda()
 
@@ -69,14 +74,18 @@ def bench_fp16(batch, prompt_len, decode_steps, prefill_len):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", choices=["int", "fp16"], required=True)
+    ap.add_argument("--model", choices=["int", "int-compiled", "fp16"], required=True)
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--prompt-len", type=int, default=128)
     ap.add_argument("--decode-steps", type=int, default=64)
     ap.add_argument("--prefill-len", type=int, default=2048)
     args = ap.parse_args()
-    fn = bench_int if args.model == "int" else bench_fp16
-    d, p = fn(args.batch, args.prompt_len, args.decode_steps, args.prefill_len)
+    if args.model == "fp16":
+        d, p = bench_fp16(args.batch, args.prompt_len, args.decode_steps,
+                          args.prefill_len)
+    else:
+        d, p = bench_int(args.batch, args.prompt_len, args.decode_steps,
+                         args.prefill_len, compiled=args.model == "int-compiled")
     print(f"{args.model} batch={args.batch}: decode {d:.1f} tok/s, "
           f"prefill {p:.0f} tok/s")
 

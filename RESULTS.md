@@ -78,16 +78,28 @@ reference forwards — slow by design, exact by construction).
 
 ## §10 Performance
 
-Phase 1 (unoptimized eager) baseline on the A100; Phase 2 optimization in
-progress. Every op runs as a separate eager kernel — the gap is
-launch-overhead dominated, which is what §10 predicts and torch.compile
-targets.
+A100, measured with `scripts/bench.py`. Compiled = operator-level
+torch.compile (`detllm.compile.compile_ops()`), verified **bit-identical**
+to eager on tokens and logits, and §9.3 invariances re-verified compiled.
 
-| metric | fp16 eager | int8 eager (phase 1) |
-|--------|-----------|----------------------|
-| decode tok/s, batch 1 | 29.3 | 0.8 |
-| decode tok/s, batch 8 | 233.8 | 5.5 |
-| prefill tok/s (2048), batch 1 | 48,898 | 1,057 |
+| metric | fp16 eager | int8 eager | int8 compiled |
+|--------|-----------|------------|---------------|
+| decode tok/s, batch 1 | 29.3 | 0.8 | 5.6 |
+| decode tok/s, batch 8 | 233.8 | 5.5 | 42.9 |
+| prefill tok/s (2048), batch 1 | 48,898 | 1,057 | 6,427 |
+
+Profiling (batch-1 decode step): eager launches ~96,000 CUDA kernels
+(the isqrt/ilog2 bit-loops unroll into hundreds of tiny int kernels per
+call × 28 layers); compiled reduces this to ~4,100 with GPU busy time
+**20.7 ms/step** — under the 34 ms/step needed for fp16 parity — but
+~200 ms/step of Python/dynamo orchestration still dominates wall clock.
+
+Next step (per §10 step 3): CUDA-graph the decode step — static-shape
+decode with bucketed cache capacity, tensor-indexed cache writes, and the
+existing exact masking (invalid slots already contribute exact zeros), so
+graph replay eliminates the CPU wall without touching numerics. The
+decode acceptance bar (≥ fp16 eager) is NOT yet met; the GPU-side budget
+shows it is reachable.
 
 ## Reproduce
 
