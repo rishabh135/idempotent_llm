@@ -117,7 +117,13 @@ class IntQwen3:
             assert t.dtype in (torch.int8, torch.int16, torch.int32, torch.int64), \
                 f"float tensor in artifact: {name} {t.dtype}"
         dev = self.device
-        g = lambda n: tensors[n].to(dev)
+        from .backends import guard_rows
+        raw = lambda n: tensors[n].to(dev)
+
+        def g(n):
+            t = raw(n)
+            # weight matrices feed _int_mm directly -> guard their backing
+            return guard_rows(t) if n.endswith(".w8t") else t
 
         c = self.cfg
         self.n_layers = c["n_layers"]; self.hidden = c["hidden"]
@@ -316,28 +322,46 @@ class IntQwen3:
             K8 = cache.k8[li][:, :, :S]              # [B, n_kv, S, hd]
             V8 = cache.v8[li][:, :, :S]
 
-            # scores: int8 GEMM per (b, head). Long prefills are processed in
-            # query chunks — every op in scores→softmax→context is
-            # per-query-row, so chunking is bit-exact and bounds the int64
-            # softmax temporaries (~[B, nq, CH, S]) on long contexts.
-            K8r = K8.repeat_interleave(group, dim=1)  # [B, n_q, S, hd]
-            V8r = V8.repeat_interleave(group, dim=1)
-            aux = {"li": li, "q": aux_q, "qkk": qkk - L.qs_k, "kk": kk,
-                   "kkk": kkk, "Pv": Pv, "xm": xm, "xk": xk, "L": L}
-            # bound the int64 softmax temporaries: B·n_q·CH·S ≲ 2^27 elements
-            budget = max(1, (1 << 27) // max(1, B * self.n_q * S))
-            CH = T if T <= budget else max(128, budget)
-            attn_parts = []
-            for qlo in range(0, T, CH):
-                qhi = min(qlo + CH, T)
-                scores, sm, sk = self._attn_scores(
-                    q8[:, :, qlo:qhi], qm[:, :, qlo:qhi], qk[:, :, qlo:qhi],
-                    K8r, L, group, aux)
-                probs = di_softmax(scores, sm, sk,
-                                   mask[:, :, qlo:qhi].expand(B, self.n_q, qhi - qlo, S))
-                attn_parts.append(self._attn_context(probs, V8r, L, aux))
-            attn = torch.cat(attn_parts, dim=2) if len(attn_parts) > 1 else attn_parts[0]
-            attn = attn.permute(0, 2, 1, 3).reshape(B, T, self.n_q * self.hd)
+            if T == 1:
+                # decode fast path: GQA via broadcasting (no repeat_interleave
+                # materialization) and single-pass 15-bit probs·V with int64
+                # accumulation — bit-identical to the GEMM/hi-lo formulation
+                # (integer addition is associative & order-independent).
+                q8g = q8.view(B, self.n_kv, group, self.hd)
+                sprod = (q8g.to(torch.int32).unsqueeze(3)
+                         * K8.to(torch.int32).unsqueeze(2))   # [B,nkv,g,S,hd]
+                scores = sprod.sum(-1, dtype=torch.int32).view(B, self.n_q, 1, S)
+                sm = qm * L.ks_m.repeat_interleave(group).view(1, self.n_q, 1, 1)
+                sk = qk + L.ks_k.repeat_interleave(group).view(1, self.n_q, 1, 1)
+                sm, sk = dy.norm_scale(sm, sk)
+                probs = di_softmax(scores, sm, sk, mask.expand(B, self.n_q, 1, S))
+                pg = probs.view(B, self.n_kv, group, S)
+                V8t = V8.transpose(-1, -2).contiguous()       # [B,nkv,hd,S]
+                cprod = (pg.to(torch.int32).unsqueeze(3)
+                         * V8t.to(torch.int32).unsqueeze(2))  # [B,nkv,g,hd,S]
+                attn = cprod.sum(-1, dtype=I64).view(B, self.n_q, 1, self.hd)
+                attn = attn.permute(0, 2, 1, 3).reshape(B, T, self.n_q * self.hd)
+            else:
+                # prefill: int8 GEMM per (b, head), query-chunked — every op in
+                # scores→softmax→context is per-query-row, so chunking is
+                # bit-exact and bounds the int64 softmax temporaries.
+                K8r = K8.repeat_interleave(group, dim=1)  # [B, n_q, S, hd]
+                V8r = V8.repeat_interleave(group, dim=1)
+                aux = {"li": li, "q": aux_q, "qkk": qkk - L.qs_k, "kk": kk,
+                       "kkk": kkk, "Pv": Pv, "xm": xm, "xk": xk, "L": L}
+                budget = max(1, (1 << 27) // max(1, B * self.n_q * S))
+                CH = T if T <= budget else max(128, budget)
+                attn_parts = []
+                for qlo in range(0, T, CH):
+                    qhi = min(qlo + CH, T)
+                    scores, sm, sk = self._attn_scores(
+                        q8[:, :, qlo:qhi], qm[:, :, qlo:qhi], qk[:, :, qlo:qhi],
+                        K8r, L, group, aux)
+                    probs = di_softmax(scores, sm, sk,
+                                       mask[:, :, qlo:qhi].expand(B, self.n_q, qhi - qlo, S))
+                    attn_parts.append(self._attn_context(probs, V8r, L, aux))
+                attn = torch.cat(attn_parts, dim=2) if len(attn_parts) > 1 else attn_parts[0]
+                attn = attn.permute(0, 2, 1, 3).reshape(B, T, self.n_q * self.hd)
 
             # merge-head requant (o-input smoothing multiply, then int8;
             # row scale starts at exact 1/2^os_k: probs k folded in col)
@@ -392,6 +416,18 @@ class IntQwen3:
             torch._dynamo.mark_static_address(t)
         self._layer_compiled = torch.compile(self._layer, mode="reduce-overhead",
                                              dynamic=False)
+
+    def enable_layer_compile(self):
+        """Compile the per-layer function (default inductor mode — used
+        UNDER the manual whole-step CUDA graph, which supplies the replay;
+        no reduce-overhead double-graphing). One-time cost: 28 layer
+        specializations (~30 min cold, inductor-disk-cached afterward)."""
+        torch._dynamo.config.cache_size_limit = max(
+            torch._dynamo.config.cache_size_limit, 128)
+        if hasattr(torch._dynamo.config, "recompile_limit"):
+            torch._dynamo.config.recompile_limit = max(
+                torch._dynamo.config.recompile_limit, 128)
+        self._layer_compiled = torch.compile(self._layer, dynamic=False)
 
     def _attn_scores(self, q8, qm, qk, K8r, L, group, aux=None):
         """Seam: int8 Q·Kᵀ with per-row dyadic score scale."""

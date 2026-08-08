@@ -17,12 +17,29 @@ import torch
 BACKENDS = ("reference", "cuda")
 
 
+# cuBLASLt's int8 CUTLASS kernels issue speculative reads past the end of
+# their operands (observed up to 16KB by compute-sanitizer; the values are
+# discarded, so results are unaffected). If an operand ends exactly at a
+# mapped-region boundary this is an illegal access — so every operand handed
+# to _int_mm must be backed by an allocation with guard rows after it.
+GUARD_ROWS = 64
+
+
+def guard_rows(x: torch.Tensor) -> torch.Tensor:
+    """Copy a 2-D tensor into a taller backing buffer, return the prefix
+    view (same shape/values; over-reads land in our allocation). Used once
+    at weight-load time."""
+    buf = x.new_zeros(x.shape[0] + GUARD_ROWS, x.shape[1])
+    buf[: x.shape[0]] = x
+    return buf[: x.shape[0]]
+
+
 def _pad_to(x: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
-    if x.shape[-2] == rows and x.shape[-1] == cols:
-        return x
-    out = x.new_zeros(*x.shape[:-2], rows, cols)
+    # ALWAYS copies into a guarded backing buffer (see note above), even
+    # when no shape padding is needed.
+    out = x.new_zeros(*x.shape[:-2], rows + GUARD_ROWS, cols)
     out[..., : x.shape[-2], : x.shape[-1]] = x
-    return out
+    return out[..., :rows, :]
 
 
 def _ceil_to(n: int, mult: int) -> int:
@@ -56,10 +73,11 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
             for i in range(0, M, slab):
                 out[i:i + slab] = int_gemm(a[i:i + slab], b, backend)
             return out
-        ap = _pad_to(a, Mp, Kp)
-        bp = _pad_to(b, Kp, Np)
         if a.dim() == 2:
-            return torch._int_mm(ap, bp)[:M, :N]
+            # b in the 2-D path is always a weight matrix, guarded at load —
+            # skip the copy when its shape already satisfies the constraints
+            bp = b if (K == Kp and N == Np) else _pad_to(b, Kp, Np)
+            return torch._int_mm(_pad_to(a, Mp, Kp), bp)[:M, :N]
         assert a.shape[:-2] == b.shape[:-2], (a.shape, b.shape)
         if M <= 4:
             # decode fast path: integer multiply-sum. Exact and
@@ -67,11 +85,13 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
             # GEMM; avoids 32x M-padding waste and per-slice kernel launches.
             prod = a.to(torch.int32).unsqueeze(-2) * b.to(torch.int32).transpose(-1, -2).unsqueeze(-3)
             return prod.sum(dim=-1, dtype=torch.int32)
-        flat_a = ap.reshape(-1, Mp, Kp)
-        flat_b = bp.reshape(-1, Kp, Np)
+        flat_a = a.reshape(-1, M, K)
+        flat_b = b.reshape(-1, K, N)
         out = torch.empty(flat_a.shape[0], Mp, Np, dtype=torch.int32, device=a.device)
         for i in range(flat_a.shape[0]):
-            out[i] = torch._int_mm(flat_a[i].contiguous(), flat_b[i].contiguous())
+            # per-slice guarded padding (2-D prefix views stay contiguous)
+            out[i] = torch._int_mm(_pad_to(flat_a[i], Mp, Kp),
+                                   _pad_to(flat_b[i], Kp, Np))
         return out.reshape(*a.shape[:-2], Mp, Np)[..., :M, :N]
     raise ValueError(f"unknown backend {backend!r}")
 
