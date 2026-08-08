@@ -62,7 +62,7 @@ Transcript: `scripts/eval_extras.py --what qual`.
 
 ## §9.3 Determinism (all exact, zero tolerance)
 
-Checks run via `tests/test_determinism.py` (fast set) and `-m slow` (8k):
+Checks run via `tests/test_determinism.py` (fast set) and `-m slow` (4k long-context):
 
 | check | status |
 |-------|--------|
@@ -122,6 +122,6 @@ guard rows. See NOTES.md.
 ```bash
 make prepare    # build artifact from HF checkpoint (float, offline, once)
 make test       # unit + golden + fast determinism checks
-make test-all   # + 8k-context slow checks
+make test-all   # + 4k-long-context slow checks
 make ppl        # full WikiText2 perplexity (int8 + fp16)
 ```
