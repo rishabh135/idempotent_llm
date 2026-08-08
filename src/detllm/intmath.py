@@ -26,6 +26,12 @@ from typing import Union
 
 import torch
 
+# Debug-mode input validation. The checks below that inspect tensor VALUES
+# (not just dtypes/shapes) force a GPU->CPU sync on every call, which
+# dominates eager decode latency. They are enabled by default off the hot
+# path and can be turned on when hunting numerics bugs.
+DEBUG_CHECKS = False
+
 Tensor = torch.Tensor
 IntLike = Union[int, Tensor]
 
@@ -133,7 +139,7 @@ def rshift_round_t(a: Tensor, k: Tensor) -> Tensor:
     _check_int(a, "a")
     _check_int(k, "k")
     k = k.to(a.dtype)
-    if bool((k < 0).any()):
+    if DEBUG_CHECKS and bool((k < 0).any()):
         raise ValueError("all shift amounts must be >= 0")
     kpos = torch.clamp(k, min=1)
     half = torch.bitwise_left_shift(torch.ones_like(a), kpos - 1)

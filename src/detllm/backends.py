@@ -58,6 +58,12 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
         if a.dim() == 2:
             return torch._int_mm(ap, bp)[:M, :N]
         assert a.shape[:-2] == b.shape[:-2], (a.shape, b.shape)
+        if M <= 4:
+            # decode fast path: integer multiply-sum. Exact and
+            # order-independent (integer addition), so bit-identical to the
+            # GEMM; avoids 32x M-padding waste and per-slice kernel launches.
+            prod = a.to(torch.int32).unsqueeze(-2) * b.to(torch.int32).transpose(-1, -2).unsqueeze(-3)
+            return prod.sum(dim=-1, dtype=torch.int32)
         flat_a = ap.reshape(-1, Mp, Kp)
         flat_b = bp.reshape(-1, Kp, Np)
         out = torch.empty(flat_a.shape[0], Mp, Np, dtype=torch.int32, device=a.device)
@@ -72,7 +78,9 @@ def int_gemm_u8i8(p_u8: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Te
     int32) against int8 b: computes (p-64)@b + 64·colsum(b), which equals
     p@b exactly in integer arithmetic. Shared by both backends so divergence
     stays inside int_gemm."""
-    assert int(p_u8.min()) >= 0 and int(p_u8.max()) <= 128
+    from .intmath import DEBUG_CHECKS
+    if DEBUG_CHECKS:
+        assert int(p_u8.min()) >= 0 and int(p_u8.max()) <= 128
     shifted = (p_u8 - 64).to(torch.int8)
     core = int_gemm(shifted, b, backend)
     corr = b.to(torch.int32).sum(dim=-2, keepdim=True) * 64
@@ -84,7 +92,9 @@ def int_gemm_u16i8(p_u16: torch.Tensor, b: torch.Tensor, backend: str) -> torch.
     against int8 b, using two int8 GEMMs: p = hi·2^7 + lo with hi in [0, 128]
     (−64 trick) and lo in [0, 127] (plain int8). Returns int64 (the shifted
     hi part can exceed int32 for long sequences)."""
-    assert int(p_u16.min()) >= 0 and int(p_u16.max()) <= (1 << 14)
+    from .intmath import DEBUG_CHECKS
+    if DEBUG_CHECKS:
+        assert int(p_u16.min()) >= 0 and int(p_u16.max()) <= (1 << 14)
     hi = p_u16 >> 7
     lo = p_u16 - (hi << 7)
     hi_part = int_gemm_u8i8(hi, b, backend).to(torch.int64)

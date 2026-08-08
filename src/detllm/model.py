@@ -63,12 +63,36 @@ class LayerWeights:
 
 @dataclass
 class KVCache:
-    k8: list = field(default_factory=list)     # per layer [B, n_kv, S, hd] int8
+    """Preallocated int8 K/V cache. `length` is the filled slot count;
+    buffers grow geometrically (contents of filled slots never move, so
+    growth cannot affect results)."""
+    k8: list = field(default_factory=list)     # per layer [B, n_kv, CAP, hd] int8
     v8: list = field(default_factory=list)
-    valid: torch.Tensor | None = None          # [B, S] bool
+    valid: torch.Tensor | None = None          # [B, S] bool (S == length)
+    length: int = 0
 
     def seq_len(self) -> int:
-        return 0 if self.valid is None else self.valid.shape[1]
+        return self.length
+
+    def append(self, li: int, k8: torch.Tensor, v8: torch.Tensor):
+        B, n_kv, T, hd = k8.shape
+        if len(self.k8) <= li:
+            cap = max(256, T)
+            self.k8.append(k8.new_zeros(B, n_kv, cap, hd))
+            self.v8.append(v8.new_zeros(B, n_kv, cap, hd))
+            self.k8[li][:, :, :T] = k8
+            self.v8[li][:, :, :T] = v8
+            return
+        cap = self.k8[li].shape[2]
+        need = self.length + T
+        if need > cap:
+            new_cap = max(need, cap * 2)
+            for buf in (self.k8, self.v8):
+                nb = buf[li].new_zeros(B, n_kv, new_cap, hd)
+                nb[:, :, :self.length] = buf[li][:, :, :self.length]
+                buf[li] = nb
+        self.k8[li][:, :, self.length:need] = k8
+        self.v8[li][:, :, self.length:need] = v8
 
 
 class IntQwen3:
@@ -244,12 +268,9 @@ class IntQwen3:
                 L.vq_m.view(1, 1, self.n_kv, 1), L.vq_k.view(1, 1, self.n_kv, 1))
             v8 = v8.permute(0, 2, 1, 3)  # [B, n_kv, T, hd]
 
-            if len(cache.k8) <= li:
-                cache.k8.append(k8); cache.v8.append(v8)
-            else:
-                cache.k8[li] = torch.cat([cache.k8[li], k8], dim=2)
-                cache.v8[li] = torch.cat([cache.v8[li], v8], dim=2)
-            K8, V8 = cache.k8[li], cache.v8[li]      # [B, n_kv, S, hd]
+            cache.append(li, k8, v8)
+            K8 = cache.k8[li][:, :, :S]              # [B, n_kv, S, hd]
+            V8 = cache.v8[li][:, :, :S]
 
             # scores: int8 GEMM per (b, head). Long prefills are processed in
             # query chunks — every op in scores→softmax→context is
@@ -298,6 +319,8 @@ class IntQwen3:
             d, dm, dk = dy.requant_i32_common(Pd, y8m, y8k, L.down_m, L.down_k,
                                               target_bits=20)
             h, k_res = dy.residual_add(h, k_res, d, dm, dk)
+
+        cache.length = S
 
         # final norm + LM head
         x8, xm, xk = self._norm_quant(h, k_res)
