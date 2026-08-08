@@ -184,3 +184,35 @@ class TestFloatLeakGuard:
         with pytest.raises(FloatLeakError):
             with NoFloatMode():
                 torch.ones(3).float() * 2.0
+
+
+class TestGraphedDecode:
+    """§10 rule: no perf change may alter any golden output. The CUDA-graphed
+    decode must be bit-identical to the eager decode loop — tokens AND int32
+    logits — including across a cache-bucket growth boundary."""
+
+    def test_graph_equals_eager_with_growth(self, cuda_model, prompts):
+        _, ps = prompts
+        p = ps[1]
+        # prompt ~10 tokens → bucket 256; 260 steps forces growth + recapture
+        te, le = cuda_model.generate(p.unsqueeze(0).cuda(), 260)
+        tg, lg = cuda_model.generate(p.unsqueeze(0).cuda(), 260, use_graph=True)
+        assert torch.equal(te, tg)
+        for a, b in zip(le, lg):
+            assert torch.equal(a, b)
+
+    def test_graph_batch(self, cuda_model, prompts):
+        _, ps = prompts
+        seqs = ps
+        T = max(len(s) for s in seqs)
+        ids = torch.zeros(len(seqs), T, dtype=torch.int64)
+        valid = torch.zeros(len(seqs), T, dtype=torch.bool)
+        for i, s in enumerate(seqs):
+            ids[i, : len(s)] = s
+            valid[i, : len(s)] = True
+        te, le = cuda_model.generate(ids.cuda(), 20, chunk_valid=valid.cuda())
+        tg, lg = cuda_model.generate(ids.cuda(), 20, chunk_valid=valid.cuda(),
+                                     use_graph=True)
+        assert torch.equal(te, tg)
+        for a, b in zip(le, lg):
+            assert torch.equal(a, b)

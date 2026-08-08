@@ -78,28 +78,44 @@ reference forwards — slow by design, exact by construction).
 
 ## §10 Performance
 
-A100, measured with `scripts/bench.py`. Compiled = operator-level
-torch.compile (`detllm.compile.compile_ops()`), verified **bit-identical**
-to eager on tokens and logits, and §9.3 invariances re-verified compiled.
+A100, measured with `scripts/bench.py`. Three int8 configurations, each
+verified **bit-identical** to the one before it (tokens AND int32 logits;
+§9.3 invariances re-verified at every stage):
 
-| metric | fp16 eager | int8 eager | int8 compiled |
-|--------|-----------|------------|---------------|
-| decode tok/s, batch 1 | 29.3 | 0.8 | 5.6 |
-| decode tok/s, batch 8 | 233.8 | 5.5 | 42.9 |
-| prefill tok/s (2048), batch 1 | 48,898 | 1,057 | 6,427 |
+- *compiled*: operator-level torch.compile (`detllm.compile.compile_ops()`)
+- *graphed*: + CUDA-graphed static-shape decode (`use_graph=True`;
+  steady-state, capture amortized)
 
-Profiling (batch-1 decode step): eager launches ~96,000 CUDA kernels
-(the isqrt/ilog2 bit-loops unroll into hundreds of tiny int kernels per
-call × 28 layers); compiled reduces this to ~4,100 with GPU busy time
-**20.7 ms/step** — under the 34 ms/step needed for fp16 parity — but
-~200 ms/step of Python/dynamo orchestration still dominates wall clock.
+| decode tok/s | fp16 eager | int8 eager | int8 compiled | int8 graphed | graphed/fp16 |
+|--------------|-----------|------------|---------------|--------------|--------------|
+| batch 1 | 29.3 | 0.8 | 5.6 | **80.2** | **2.7×** |
+| batch 8 | 233.8 | 5.5 | 42.9 | 115.7 | 0.49× |
 
-Next step (per §10 step 3): CUDA-graph the decode step — static-shape
-decode with bucketed cache capacity, tensor-indexed cache writes, and the
-existing exact masking (invalid slots already contribute exact zeros), so
-graph replay eliminates the CPU wall without touching numerics. The
-decode acceptance bar (≥ fp16 eager) is NOT yet met; the GPU-side budget
-shows it is reachable.
+Prefill tok/s (2048, batch 1): fp16 48,898; int8 eager 1,057; compiled 6,427.
+
+**Acceptance (§10: decode ≥ fp16 eager): PASSED at batch 1** (2.7×, beyond
+the 1.3× stretch goal). Batch 8 is not yet at parity — a layer-level
+compilation experiment (fusing each layer's ~150 glue kernels into one
+inductor graph under the whole-step CUDA graph) is the identified next
+step and was in progress at time of writing.
+
+How the batch-1 win happened (details in NOTES.md):
+- eager decode launched ~96,000 CUDA kernels/step (isqrt/ilog2 bit-loops ×
+  28 layers); op-level compile cut this to ~4,100 (GPU busy 20.7 ms/step)
+  but ~200 ms/step of Python orchestration remained;
+- a manual whole-step CUDA graph replays the entire step in one launch;
+  static shapes come from bucketed cache capacity + validity masking
+  (invalid slots contribute exact zeros — the same §9.3 masking argument),
+  cache writes via `index_copy_` at a device-tensor offset;
+- decode attention avoids GQA `repeat_interleave` copies via broadcasting
+  and computes 15-bit probs·V in one int32-multiply/int64-accumulate pass
+  (bit-identical to the hi/lo GEMM split by associativity).
+
+A day of flaky illegal-memory-access crashes turned out to be an upstream
+bug, not ours: cuBLASLt's int8 CUTLASS kernels speculatively read up to
+~16KB past operand ends (compute-sanitizer evidence; values discarded, so
+results were always correct). All `_int_mm` operands are now backed by
+guard rows. See NOTES.md.
 
 ## Reproduce
 

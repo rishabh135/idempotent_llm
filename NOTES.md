@@ -20,6 +20,19 @@ read and transcribed before implementation.
   error 2^-16 ≈ 0.0015% ≪ the 0.5% spec bound), 14-bit for QK-Norm γ,
   int16 RoPE tables at k = 14.
 
+## cuBLASLt int8 GEMM over-read (found via compute-sanitizer)
+
+`torch._int_mm`'s CUTLASS igemm kernels issue speculative loads up to ~16KB
+PAST THE END of their operands (cutlass1x::gemm::gemm_kernel_nolb, observed
+"Address ... is 16385 bytes after the nearest allocation"). The loaded
+values are discarded, so results are always correct — but if an operand
+ends at a mapped-region boundary the load faults, producing FLAKY
+illegal-memory-access crashes whose reported location is an innocent later
+kernel. Mitigation (backends.py): every _int_mm operand is backed by an
+allocation with GUARD_ROWS=64 extra rows (weights guarded once at load,
+activations by `_pad_to` which always copies into a guarded buffer).
+Purely a memory-safety fix; zero effect on computed values.
+
 ## torch facts probed on this machine (torch 2.13.0+cu130, A100)
 
 - `torch._int_mm` requires M ≥ 32 with M ≡ 0 (mod 32) safe (M=17, 20 fail;
