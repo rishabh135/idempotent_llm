@@ -77,12 +77,13 @@ def quant_i8_pertoken(x: torch.Tensor, m: torch.Tensor, k: torch.Tensor):
     x: [..., C] integer tensor with per-token dyadic scale (m, k) [..., 1].
     Returns (x8 int8, m_out, k_out) with value ≈ x8 · m_out / 2^k_out.
     """
+    m, k = norm_scale(m.to(I64), k.to(I64))  # keep a·m within int64 headroom
     x64 = x.to(I64)
     a = x64.abs().amax(dim=-1, keepdim=True)
     a = torch.clamp(a, min=1)
     x8 = clamp_i8(round_half_away_div(x64 * 127, a))
-    m_out, e = fit_dyadic_ratio(a * m.to(I64), 127)
-    return x8, m_out, k.to(I64) + e
+    m_out, e = fit_dyadic_ratio(a * m, 127)
+    return x8, m_out, k + e
 
 
 def requant_i32_common(P: torch.Tensor, row_m, row_k, col_m, col_k: int, target_bits: int = 12):
@@ -109,26 +110,37 @@ def requant_i8_rowcol(P: torch.Tensor, row_m, row_k, col_m, col_k: int):
     scaled = P.to(I64) * col_m.to(I64)
     a = scaled.abs().amax(dim=-1, keepdim=True)
     a = torch.clamp(a, min=1)
+    # headroom guard: keep scaled·127 within int64 (pre-shift cancels in the
+    # ratio; only the k bookkeeping moves)
+    sh = torch.clamp(ilog2_floor(a) - 45, min=0)
+    scaled = rshift_round_t(scaled, sh.broadcast_to(scaled.shape))
+    a = torch.clamp(scaled.abs().amax(dim=-1, keepdim=True), min=1)
     y8 = clamp_i8(round_half_away_div(scaled * 127, a))
     m_out, e = fit_dyadic_ratio(a * row_m.to(I64), 127)
-    return y8, m_out, row_k.to(I64) + col_k + e
+    return y8, m_out, row_k.to(I64) + col_k + e - sh
 
 
 def requant_i8_static(P: torch.Tensor, row_m, row_k, col_m, col_k: int,
-                      s_m: int, s_k: int):
+                      s_m, s_k):
     """Requantize a GEMM output to int8 with a STATIC dyadic target scale
     s_m/2^s_k (used for K and V heading into the cache).
 
-    y = round(P · col_m · row_m / 2^(row_k+col_k) · 2^s_k / s_m), clamped.
+    s_m/s_k may be python ints or int64 tensors broadcastable against P
+    (e.g. per-kv-head [..., n_kv, 1, 1]).
+
+    y = round(P · col_m · row_m / 2^(row_k+col_k) · 2^s_k / s_m), clamped —
+    a single fused rounding.
     """
+    if not isinstance(s_m, torch.Tensor):
+        s_m = torch.tensor(s_m, dtype=I64, device=P.device)
+    if not isinstance(s_k, torch.Tensor):
+        s_k = torch.tensor(s_k, dtype=I64, device=P.device)
     num = P.to(I64) * col_m.to(I64) * row_m.to(I64)
-    shift = row_k.to(I64) + col_k - s_k  # may be negative
+    shift = (row_k.to(I64) + col_k - s_k).broadcast_to(num.shape)
     up = torch.clamp(-shift, min=0)
     down = torch.clamp(shift, min=0)
-    num = lshift_t(num, up.broadcast_to(num.shape))
-    # single fused round: divide by (s_m << down)
-    den = lshift_t(torch.tensor(s_m, dtype=I64, device=P.device).broadcast_to(num.shape),
-                   down.broadcast_to(num.shape))
+    num = lshift_t(num, up)
+    den = lshift_t(s_m.to(I64).broadcast_to(num.shape), down)
     return clamp_i8(round_half_away_div(num, den))
 
 

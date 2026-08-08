@@ -39,6 +39,11 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
     if backend == "reference":
         return torch.matmul(a.to(torch.int32), b.to(torch.int32))
     if backend == "cuda":
+        if b.dim() == 2 and a.dim() > 2:
+            # shared weight: fold batch dims into M (one big exact GEMM)
+            lead = a.shape[:-1]
+            out = int_gemm(a.reshape(-1, a.shape[-1]), b, backend)
+            return out.reshape(*lead, b.shape[-1])
         M, K = a.shape[-2], a.shape[-1]
         N = b.shape[-1]
         Mp, Kp, Np = max(32, _ceil_to(M, 32)), _ceil_to(K, 8), _ceil_to(N, 8)
@@ -46,11 +51,12 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
         bp = _pad_to(b, Kp, Np)
         if a.dim() == 2:
             return torch._int_mm(ap, bp)[:M, :N]
+        assert a.shape[:-2] == b.shape[:-2], (a.shape, b.shape)
         flat_a = ap.reshape(-1, Mp, Kp)
         flat_b = bp.reshape(-1, Kp, Np)
         out = torch.empty(flat_a.shape[0], Mp, Np, dtype=torch.int32, device=a.device)
         for i in range(flat_a.shape[0]):
-            out[i] = torch._int_mm(flat_a[i], flat_b[i])
+            out[i] = torch._int_mm(flat_a[i].contiguous(), flat_b[i].contiguous())
         return out.reshape(*a.shape[:-2], Mp, Np)[..., :M, :N]
     raise ValueError(f"unknown backend {backend!r}")
 
@@ -65,3 +71,16 @@ def int_gemm_u8i8(p_u8: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Te
     core = int_gemm(shifted, b, backend)
     corr = b.to(torch.int32).sum(dim=-2, keepdim=True) * 64
     return core + corr
+
+
+def int_gemm_u16i8(p_u16: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
+    """Exact GEMM for 15-bit probabilities (values in [0, 2^14], stored int32)
+    against int8 b, using two int8 GEMMs: p = hi·2^7 + lo with hi in [0, 128]
+    (−64 trick) and lo in [0, 127] (plain int8). Returns int64 (the shifted
+    hi part can exceed int32 for long sequences)."""
+    assert int(p_u16.min()) >= 0 and int(p_u16.max()) <= (1 << 14)
+    hi = p_u16 >> 7
+    lo = p_u16 - (hi << 7)
+    hi_part = int_gemm_u8i8(hi, b, backend).to(torch.int64)
+    lo_part = int_gemm(lo.to(torch.int8), b, backend).to(torch.int64)
+    return (hi_part << 7) + lo_part

@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from detllm import dyadic as dy
-from detllm.backends import int_gemm, int_gemm_u8i8
+from detllm.backends import int_gemm, int_gemm_u8i8, int_gemm_u16i8
 from detllm.ops import (
     apply_int_rope,
     di_exp,
@@ -18,6 +18,7 @@ from detllm.ops import (
     di_swiglu,
 )
 from detllm.ops.di_rmsnorm import OUT_FRAC_BITS, di_rmsnorm_gamma
+from detllm.ops.di_softmax import PROB_ONE
 from detllm.ops.rope import ROPE_FRAC_BITS, build_rope_tables
 
 I64 = torch.int64
@@ -41,6 +42,15 @@ class TestIntGemm:
         v = torch.randint(-128, 128, (21, 6), generator=g, dtype=torch.int8)
         got = int_gemm_u8i8(p, v, "reference")
         want = p.to(torch.int32) @ v.to(torch.int32)
+        assert torch.equal(got, want)
+
+    def test_u16_hilo_split_exact(self):
+        g = torch.Generator().manual_seed(7)
+        p = torch.randint(0, (1 << 14) + 1, (9, 300), generator=g, dtype=torch.int32)
+        v = torch.randint(-128, 128, (300, 6), generator=g, dtype=torch.int8)
+        got = int_gemm_u16i8(p, v, "reference")
+        want = p.to(torch.int64) @ v.to(torch.int64)
+        assert got.dtype == torch.int64
         assert torch.equal(got, want)
 
 
@@ -115,7 +125,7 @@ class TestDiSoftmax:
         xi, m, k, xf = self._mk(3)
         valid = torch.ones(xi.shape, dtype=torch.bool)
         p = di_softmax(xi, m, k, valid)
-        got = p.double() / 128.0
+        got = p.double() / PROB_ONE
         want = torch.softmax(xf, dim=-1)
         assert (got - want).abs().max().item() < 0.04  # FROZEN (measured 0.027)
 
@@ -124,7 +134,8 @@ class TestDiSoftmax:
         valid = torch.ones(xi.shape, dtype=torch.bool)
         p = di_softmax(xi, m, k, valid)
         sums = p.sum(dim=-1)
-        assert bool(((sums - 128).abs() <= 32).all())  # rounding slack only
+        # rounding slack only: up to half an ulp per element
+        assert bool(((sums - PROB_ONE).abs() <= xi.shape[-1]).all())
 
     def test_masked_positions_contribute_nothing(self):
         xi, m, k, xf = self._mk(5)

@@ -31,8 +31,10 @@ read and transcribed before implementation.
 
 ## Key deviations from spec text (with rationale)
 
-1. **K and V caches use STATIC per-(layer, head) dyadic scales calibrated
-   offline**, not per-token dynamic scales (spec §6.7 said per-token).
+1. **K and V caches use STATIC dyadic scales calibrated offline** — K
+   per-(layer, head, channel) with the QK-smoothing factor folded, V
+   per-(layer, head) — not per-token dynamic scales (spec §6.7 said
+   per-token).
    Reason: per-token scales on K sit on the *row-compare* dim of the softmax
    (row max over keys j needs a common scale across j), and per-token scales
    on V sit on the *reduction* dim of probs·V (scale can't factor out of the
@@ -66,14 +68,47 @@ read and transcribed before implementation.
    LM head weight (tied). Final-norm γ folded into a separate LM-head copy
    of the embedding (γ-fold would corrupt lookups if applied to the shared
    tensor).
-6. **Attention probs u8 [0,128] through int8 GEMM**: `_int_mm` takes int8
-   only, so the dispatch layer computes P@V as (P-64)@V + 64·colsum(V),
-   which is exact in integer arithmetic; the reference backend computes the
-   same formula. Backend divergence remains confined to the single
-   `int_gemm` call.
+6. **Attention probs are 15-bit, not the paper's u8** (see Accuracy
+   findings: 7-bit probabilities cost ~2 PPL once scores are accurate).
+   p = hi·2^7 + lo with hi ∈ [0,128] and lo ∈ [0,127]; P@V = (hi@V << 7) +
+   lo@V computed as two int8 GEMMs — hi via the exact (hi-64)@V +
+   64·colsum(V) trick, lo directly. All exact in integer arithmetic; the
+   reference backend computes the same formulas, so backend divergence
+   remains confined to the single `int_gemm` call. The paper's p_out = 8 is
+   kept available (`di_softmax(..., p_out_bits=8)`) for the ablation.
 7. **RMSNorm eps is dropped** (guard `rms >= 1` instead): after scale
    cancellation an integer eps is ~0; it only matters for near-zero rows.
    Verified acceptable via perplexity (§9.2).
+8. **DI-SwiGLU sigmoid uses the stable elementwise two-branch form**, not
+   Algorithm 3's shared row-max frame, which underflows DI-Exp's output
+   resolution for un-smoothed gates (σ collapsed to 0 where true σ ≈ 0.9).
+   See the docstring in `ops/di_swiglu.py`.
+9. **Analytic smoothing (spec §7.2) is ON in the final config** — QK
+   smoothing (α = 0.3) and SmoothQuant-style activation smoothing (α = 0.5)
+   on attn-in / mlp-in / down-in / o-in. Both are closed-form calibration
+   folds; the §9.2 ablation shows they are required for the accuracy bar.
+
+## Accuracy findings (5-segment WikiText2 PPL attribution; fp16 = 22.42)
+
+The naive faithful pipeline scored 44.9. Error attribution by float-oracle
+bypass (scripts/attribute_error.py) identified, in order:
+
+1. **Q·K int8 quantization destroyed scores** (bypass → 24.3). Root cause:
+   post-QK-Norm/RoPE K has per-channel ranges spanning ~85× (layer-0 worst
+   channel max 409 vs median 4.8) — the median channel got 1.5 of 127 int8
+   levels. Fix: analytic QK smoothing, c_d = (maxK_d)^α/(maxQ_d)^(1-α)
+   (α=0.3 from sweep), Q multiplied by dyadic c at runtime, K's static scale
+   made per-channel with c folded — c cancels exactly in the dot product.
+   44.9 → 25.2.
+2. **7-bit probabilities cost ~2.1 PPL** once scores were accurate (masked
+   before the smoothing fix — the two attributions interact). Fix: p_out=15
+   (probs in [0, 2^14]) via an exact hi/lo int8 GEMM split. 24.7 → 22.3.
+3. **Activation smoothing** (SmoothQuant α=0.5, analytic) on attn-in,
+   mlp-in, down-in, o-in: ~−0.6 combined.
+4. Weight int8: −0.14; embedding int8: −0.11 (both spec-fixed, accepted).
+   DI-Exp error, swiglu, rmsnorm, V-int8: all ≤0.1 after the above.
+
+Final full-test-set WikiText2: int 20.717 vs fp16 20.955 (ratio 0.989).
 
 ## DI-Exp semantics (paper Alg. 1, as implemented)
 

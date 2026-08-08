@@ -22,16 +22,21 @@ from ..intmath import lshift_t, round_half_away_div
 from .di_exp import di_exp
 
 I64 = torch.int64
-P_OUT_BITS = 8
-PROB_ONE = 1 << (P_OUT_BITS - 1)  # 128: fixed-point 1.0 of the output
+# Output precision. The paper's Algorithm 2 uses p_out = 8 (u8 probs, k=7);
+# our §9.2 ablation showed 7-bit probabilities cost ~2 PPL once scores are
+# accurate, so the default is p_out = 15 (probs in [0, 2^14], k=14), fed to
+# the GEMM as an exact hi/lo int8 split (backends.int_gemm_u16i8).
+P_OUT_BITS = 15
+PROB_ONE = 1 << (P_OUT_BITS - 1)  # fixed-point 1.0 of the output
 
 
 def di_softmax(scores: torch.Tensor, m: torch.Tensor, k: torch.Tensor,
-               valid: torch.Tensor, clip_c: int | None = None):
+               valid: torch.Tensor, clip_c: int | None = None,
+               p_out_bits: int = P_OUT_BITS):
     """scores: int tensor [..., T]; m, k: int64 [..., 1]; valid: bool [..., T].
 
-    Returns probs int32 [..., T] in [0, 128], fixed scale (1, 7).
-    Rows with no valid positions return all zeros.
+    Returns probs int32 [..., T] in [0, 2^(p_out_bits-1)], fixed scale
+    (1, p_out_bits-1). Rows with no valid positions return all zeros.
     """
     x = scores.to(I64)
     m = m.to(I64)
@@ -51,5 +56,5 @@ def di_softmax(scores: torch.Tensor, m: torch.Tensor, k: torch.Tensor,
     exps, _tpos = di_exp(xd, m, k)
     exps = torch.where(valid, exps, torch.zeros_like(exps))
     denom = torch.clamp(exps.sum(dim=-1, keepdim=True), min=1)
-    probs = round_half_away_div(exps << (P_OUT_BITS - 1), denom)
+    probs = round_half_away_div(exps << (p_out_bits - 1), denom)
     return probs.to(torch.int32)
