@@ -32,6 +32,7 @@ from .intmath import clamp_i8, lshift_t, round_half_away_div
 from .ops.di_rmsnorm import OUT_FRAC_BITS, di_rmsnorm, di_rmsnorm_gamma
 from .ops.di_softmax import P_OUT_BITS, di_softmax
 from .ops.di_swiglu import di_swiglu
+from .ops.fused_attn import HAVE_TRITON, fused_int_attn
 from .ops.rope import apply_int_rope
 
 I64 = torch.int64
@@ -322,7 +323,24 @@ class IntQwen3:
             K8 = cache.k8[li][:, :, :S]              # [B, n_kv, S, hd]
             V8 = cache.v8[li][:, :, :S]
 
-            if T == 1:
+            if (T == 1 and cache.static_cap and HAVE_TRITON
+                    and self.backend == "cuda"):
+                # fused Triton decode attention (static cache mode): the
+                # whole scores→DI-Exp→normalize→probs·V chain in one kernel,
+                # bit-identical to the paths below (see ops/fused_attn.py).
+                sm = qm * L.ks_m.repeat_interleave(group).view(1, self.n_q, 1, 1)
+                sk = qk + L.ks_k.repeat_interleave(group).view(1, self.n_q, 1, 1)
+                sm, sk = dy.norm_scale(sm, sk)
+                # per-row DI-Exp constant, same ops as di_exp()
+                m_f = sm + (sm >> 1) - (sm >> 4)
+                one = torch.ones_like(sk)
+                tpos = torch.clamp(
+                    round_half_away_div(lshift_t(one, sk), m_f), min=1)
+                attn = fused_int_attn(q8, K8, V8, cache.valid,
+                                      tpos.view(B, self.n_q).contiguous(),
+                                      self.n_q, group)
+                attn = attn.view(B, T, self.n_q * self.hd)
+            elif T == 1:
                 # decode fast path: GQA via broadcasting (no repeat_interleave
                 # materialization) and single-pass 15-bit probs·V with int64
                 # accumulation — bit-identical to the GEMM/hi-lo formulation

@@ -84,20 +84,31 @@ verified **bit-identical** to the one before it (tokens AND int32 logits;
 
 - *compiled*: operator-level torch.compile (`detllm.compile.compile_ops()`)
 - *graphed*: + CUDA-graphed static-shape decode (`use_graph=True`;
-  steady-state, capture amortized)
+  steady-state) + fused integer decode-attention Triton kernel
+  (`ops/fused_attn.py`: scores → DI-Exp → normalize → probs·V in one
+  kernel, three streaming passes, zero materialized intermediates)
 
-| decode tok/s | fp16 eager | int8 eager | int8 compiled | int8 graphed | graphed/fp16 |
-|--------------|-----------|------------|---------------|--------------|--------------|
-| batch 1 | 29.3 | 0.8 | 5.6 | **80.2** | **2.7×** |
-| batch 8 | 233.8 | 5.5 | 42.9 | 115.7 | 0.49× |
+| decode tok/s | fp16 eager | int8 eager | int8 compiled | int8 graphed+fused | vs fp16 |
+|--------------|-----------|------------|---------------|--------------------|---------|
+| batch 1 | 29.3 | 0.8 | 5.6 | **85.1** | **2.9×** |
+| batch 8 | 233.8 | 5.5 | 42.9 | 166.2 | 0.71× |
 
 Prefill tok/s (2048, batch 1): fp16 48,898; int8 eager 1,057; compiled 6,427.
 
-**Acceptance (§10: decode ≥ fp16 eager): PASSED at batch 1** (2.7×, beyond
-the 1.3× stretch goal). Batch 8 is not yet at parity — a layer-level
-compilation experiment (fusing each layer's ~150 glue kernels into one
-inductor graph under the whole-step CUDA graph) is the identified next
-step and was in progress at time of writing.
+**Acceptance (§10: decode ≥ fp16 eager): PASSED at batch 1** (2.9×, beyond
+the 1.3× stretch goal). Batch 8 stands at 0.71× — the step is bounded by
+per-kernel overhead across the ~2,500 remaining small kernels inside the
+replay (GPU busy time is only ~18 ms of the 48 ms step); the identified
+next lever is layer-level compilation (fusing each layer's glue into one
+inductor graph under the whole-step CUDA graph).
+
+The Triton kernel reproduces the §5 integer semantics exactly (per the
+§10 constraint): DI-Exp's shift decomposition is computed per cache slot
+with divisions rewritten in the positive domain, reductions are integer
+sums/maxes (order-independent), and the kernel is validated bit-for-bit
+against the independent eager formulation at both batch sizes, across
+cache-bucket growth, plus prefill/decode invariance and CUDA-vs-CPU
+cross-device checks.
 
 How the batch-1 win happened (details in NOTES.md):
 - eager decode launched ~96,000 CUDA kernels/step (isqrt/ilog2 bit-loops ×

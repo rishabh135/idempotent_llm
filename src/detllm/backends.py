@@ -34,9 +34,31 @@ def guard_rows(x: torch.Tensor) -> torch.Tensor:
     return buf[: x.shape[0]]
 
 
-def _pad_to(x: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
-    # ALWAYS copies into a guarded backing buffer (see note above), even
-    # when no shape padding is needed.
+_PAD_CACHE: dict = {}
+
+
+def _pad_to(x: torch.Tensor, rows: int, cols: int, slot: str = "a") -> torch.Tensor:
+    """Copy x into a guarded backing buffer (see note above).
+
+    2-D inputs reuse a cached pre-zeroed buffer per (rows, cols, in_cols)
+    shape: pad COLUMNS beyond x's width are zeroed once at allocation and
+    never written afterwards (zeros there are required for exactness — they
+    meet the other operand's K padding); pad/stale ROWS only influence
+    output rows that are sliced away, so they need no re-zeroing. This
+    saves a fill kernel per GEMM call. Buffers allocated during CUDA-graph
+    warmup keep stable addresses across capture/replay.
+    """
+    if x.dim() == 2:
+        # `slot` separates the two operand positions of one GEMM call —
+        # when M == K == N both operands would otherwise share a buffer
+        key = (slot, rows, cols, x.shape[-1], x.dtype, x.device)
+        buf = _PAD_CACHE.get(key)
+        if buf is None:
+            buf = torch.zeros(rows + GUARD_ROWS, cols, dtype=x.dtype,
+                              device=x.device)
+            _PAD_CACHE[key] = buf
+        buf[: x.shape[0], : x.shape[1]] = x
+        return buf[:rows]
     out = x.new_zeros(*x.shape[:-2], rows + GUARD_ROWS, cols)
     out[..., : x.shape[-2], : x.shape[-1]] = x
     return out[..., :rows, :]
@@ -76,7 +98,7 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
         if a.dim() == 2:
             # b in the 2-D path is always a weight matrix, guarded at load —
             # skip the copy when its shape already satisfies the constraints
-            bp = b if (K == Kp and N == Np) else _pad_to(b, Kp, Np)
+            bp = b if (K == Kp and N == Np) else _pad_to(b, Kp, Np, slot="b")
             return torch._int_mm(_pad_to(a, Mp, Kp), bp)[:M, :N]
         assert a.shape[:-2] == b.shape[:-2], (a.shape, b.shape)
         if M <= 4:
@@ -91,7 +113,7 @@ def int_gemm(a: torch.Tensor, b: torch.Tensor, backend: str) -> torch.Tensor:
         for i in range(flat_a.shape[0]):
             # per-slice guarded padding (2-D prefix views stay contiguous)
             out[i] = torch._int_mm(_pad_to(flat_a[i], Mp, Kp),
-                                   _pad_to(flat_b[i], Kp, Np))
+                                   _pad_to(flat_b[i], Kp, Np, slot="b"))
         return out.reshape(*a.shape[:-2], Mp, Np)[..., :M, :N]
     raise ValueError(f"unknown backend {backend!r}")
 
