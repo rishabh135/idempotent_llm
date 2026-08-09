@@ -1,4 +1,4 @@
-# detllm — deterministic integer-only inference for Qwen3-0.6B
+# DetLLM — Fully deterministic LLM Inference
 
 An inference pipeline for [Qwen/Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B)
 where the entire forward pass — every matmul, normalization, activation,
@@ -27,7 +27,7 @@ completion. Framework "deterministic mode" flags only pin run-to-run order
 on one machine at one shape — they do nothing for batch invariance or
 cross-hardware reproducibility.
 
-The fashionable fix is to write **batch-invariant floating-point kernels**
+The common fix is to write **batch-invariant floating-point kernels**
 that pin a fixed reduction order everywhere. That works, but it treats the
 symptom: determinism holds only for those specific kernels on that
 platform, and bit-identical results across different hardware are still
