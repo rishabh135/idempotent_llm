@@ -13,77 +13,66 @@ reference produce identical bits).
 ## Why LLM inference is nondeterministic — and how integers fix it
 
 Ask a served LLM the same question twice at temperature 0 and you can get
-two different answers. The root cause is that **floating-point addition is
-not associative** — `(a + b) + c ≠ a + (b + c)` because each addition
-rounds — while high-performance kernels sum in whatever order maximizes
-throughput. That order changes with batch size and composition (your
-request's rows get tiled differently depending on who it shares a batch
-with), prefill vs. incremental decode (one big GEMM vs. many small ones),
-kernel selection (cuBLAS picks tile shapes by heuristic; split-K and
-atomics can differ run to run), and hardware or library version. So the
-"same" mathematical forward pass produces slightly different logits, and
-one flipped argmax early in a generation cascades into a visibly different
-completion. Framework "deterministic mode" flags only pin run-to-run order
-on one machine at one shape — they do nothing for batch invariance or
-cross-hardware reproducibility.
+two different answers. **Floating-point addition is not associative** —
+`(a + b) + c ≠ a + (b + c)`, since each addition rounds — while
+high-performance kernels sum in whatever order maximizes throughput. That
+order shifts with batch size and composition (your rows get tiled
+differently depending on who you share a batch with), prefill vs.
+incremental decode (one big GEMM vs. many small ones), and kernel selection
+(cuBLAS picks tile shapes by heuristic; split-K and atomics can differ run
+to run). The "same" forward pass yields slightly different logits, and one
+flipped argmax cascades into a visibly different completion.
+"Deterministic mode" flags only pin run-to-run order on one machine at one
+shape; they do nothing for batch invariance or cross-hardware
+reproducibility.
 
-Crossing hardware makes the problem structural rather than incidental.
-Different chips have different tensor-core designs, different internal
-accumulation precisions, and different fastest reduction orders, so
-bit-identical floating-point results across architectures mean either
-abandoning each chip's optimized paths or abandoning floating point.
-PyTorch says as much in its own reproducibility notes: results are not
-guaranteed across releases or platforms, and need not match between CPU and
-GPU even with identical seeds.
+Across hardware the problem is structural, not incidental: chips differ in
+tensor-core design, internal accumulation precision, and which reduction
+order is fastest, so bit-identical float across architectures means
+abandoning either each chip's optimized paths or float itself. PyTorch's
+own reproducibility notes say as much — no guarantee across releases or
+platforms, and none between CPU and GPU even with identical seeds.
 
-The common fix is to write **batch-invariant floating-point kernels**
-that pin a fixed reduction order everywhere. That works, but it treats the
-symptom: determinism holds only for those specific kernels on that
-platform, and bit-identical results across different hardware are still
-out of reach.
+The usual fix, **batch-invariant floating-point kernels** with a pinned
+reduction order, treats the symptom: determinism holds only for those
+kernels on that platform. Reaching for int8 doesn't work either, because
+mainstream int8 stacks aren't actually integer — I-LLM (arXiv:2405.17849)
+notes that prior methods such as SmoothQuant and OmniQuant use *simulated*
+quantization, integers at the edges with the compute-intensive operations
+run on dequantized floats, leaving pipelines that "still involve partially
+FP operations on non-linear operators such as Softmax, Normalization, and
+SiLU". Every surviving float op, and every dequantize→compute→requantize
+cycle around it, hands the result back to platform-dependent rounding.
+Integer *storage* is not integer *arithmetic*.
 
-The next instinct — quantize to int8 and let integer arithmetic do the
-rest — doesn't fix it either, because mainstream int8 stacks are not
-actually integer. I-LLM (arXiv:2405.17849) surveys the field on exactly
-this point: prior post-training methods such as SmoothQuant and OmniQuant
-use *simulated* quantization, keeping integers at the inputs and outputs
-while the compute-intensive operations run on dequantized floating-point
-values, and their "inference pipelines still involve partially FP
-operations on non-linear operators such as Softmax, Normalization, and
-SiLU". Every one of those surviving float operations, and every
-dequantize→compute→requantize cycle around it, hands the result back to
-platform-dependent rounding. Integer *storage* is not integer
-*arithmetic*.
+This project removes the cause: **integer addition is exactly associative
+and commutative**, so every reduction — GEMM accumulation, softmax sums,
+norm sums — yields the same bits in *any* order on *any* correct hardware.
+Cashing that in takes the *entire* forward pass: no float anywhere, softmax,
+RMSNorm, SwiGLU and RoPE included (this repo's contribution, via I-LLM's
+dyadic-scale machinery). Determinism stops being a discipline to maintain
+and becomes a property of the arithmetic — which is what makes the
+strongest check here possible at all: an A100's tensor cores, an H100's,
+and a CPU's plain integer matmuls produce **identical logits, bit for
+bit**.
 
-This project removes the cause instead: **integer addition is exactly
-associative and commutative**, so every reduction — GEMM accumulation,
-softmax sums, norm sums — yields the same bits in *any* order, on *any*
-correct hardware. Cashing that in requires the *entire* forward pass to be
-integer — no float anywhere, softmax, RMSNorm, SwiGLU and RoPE included
-(this repo's contribution, via I-LLM's dyadic-scale machinery). Determinism
-then stops being an engineering discipline to maintain and becomes a
-property of the arithmetic. That is what makes the strongest check here
-possible at all: an A100's tensor cores, an H100's, and a CPU's plain
-integer matmuls produce **identical logits, bit for bit**.
+Integer-only inference itself isn't new — I-LLM and its predecessors
+(I-BERT, I-ViT) target *efficiency* on integer-only edge hardware and never
+examine determinism; batch invariance, prefill/decode invariance and
+cross-device bit-exactness are not claims in that literature. To our
+knowledge this is the first pipeline built and verified end-to-end for
+**unconditional determinism** — bit-identical logits across runs, batch
+compositions, prefill/decode splits and CPU/GPU backends at once — with the
+test suite treating each as an exact, zero-tolerance acceptance criterion.
 
-Integer-only inference itself is not new — I-LLM and its predecessors
-(I-BERT, I-ViT) target *efficiency* on integer-only edge hardware, and
-never examine determinism (batch invariance, prefill/decode invariance,
-and cross-device bit-exactness are not claims that appear in that
-literature). To our knowledge this is the first pipeline built and
-verified end-to-end for **unconditional determinism** — bit-identical
-logits across runs, batch compositions, prefill/decode splits, and CPU/GPU
-backends simultaneously — with the test suite treating every one of those
-as an exact, zero-tolerance acceptance criterion.
-
-Based on a simplification of I-LLM (arXiv:2405.17849) — dyadic-number scale
-arithmetic and shift-based integer non-linear operators — with analytic
-(training-free) smoothing. WikiText2 perplexity: **20.72 (int8) vs 20.95
-(fp16 baseline)**; CUDA-graphed integer decode runs at **3.6× the fp16
-eager baseline at batch 1 and 3.4× at batch 8** (106 / 783 tok/s on an
-A100) while staying bit-exact. The original specification is in [docs/SPEC.md](docs/SPEC.md);
-all numbers in [docs/RESULTS.md](docs/RESULTS.md); design decisions and deviation
-log in [docs/NOTES.md](docs/NOTES.md).
+It simplifies I-LLM — dyadic-scale arithmetic, shift-based integer
+non-linear operators — with analytic (training-free) smoothing. WikiText2
+perplexity **20.72 (int8) vs 20.95 (fp16)**; CUDA-graphed integer decode
+runs at **3.6× the fp16 eager baseline at batch 1 and 3.4× at batch 8**
+(106 / 783 tok/s on an A100), bit-exact throughout. Spec in
+[docs/SPEC.md](docs/SPEC.md), all numbers in
+[docs/RESULTS.md](docs/RESULTS.md), design decisions and deviation log in
+[docs/NOTES.md](docs/NOTES.md).
 
 ## Layout
 
