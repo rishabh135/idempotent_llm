@@ -111,7 +111,7 @@ def run_int8(config: str, steps: int, artifact: str):
     if backend == "cuda":
         from detllm.compile import compile_ops
         compile_ops()
-    model = IntQwen3(artifact, backend="reference" if backend == "cpu" else "cuda")
+    model = IntQwen3(artifact, backend=backend)
     _, ids = get_prompt_ids()
     dev = model.device
     tok_chain, logit_chain = HashChain(), HashChain()

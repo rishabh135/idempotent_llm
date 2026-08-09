@@ -9,6 +9,7 @@ import argparse
 
 import torch
 
+from detllm.backends import canonical_backend
 from detllm.model import IntQwen3
 
 ART = "artifacts/qwen3-0.6b-int8"
@@ -18,7 +19,7 @@ PROMPT = "The capital of France is"
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--prompt", default=PROMPT)
-    ap.add_argument("--backend", default="reference")
+    ap.add_argument("--backend", default="reference", type=canonical_backend)
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer

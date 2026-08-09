@@ -217,7 +217,7 @@ from detllm.model import IntQwen3
 from transformers import AutoTokenizer
 
 tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-model = IntQwen3("artifacts/qwen3-0.6b-int8", backend="cuda")  # or "reference"
+model = IntQwen3("artifacts/qwen3-0.6b-int8", backend="cuda")  # or "reference"/"cpu"
 ids = tok("The capital of France is", return_tensors="pt").input_ids
 toks, _ = model.generate(ids.cuda(), max_new=50)   # use_graph=True for
 print(tok.decode(toks[0]))                         # CUDA-graphed decode

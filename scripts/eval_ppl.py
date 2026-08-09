@@ -15,6 +15,8 @@ import math
 
 import torch
 
+from detllm.backends import canonical_backend
+
 
 def get_segments(seqlen: int):
     from datasets import load_dataset
@@ -73,7 +75,7 @@ def eval_float(segments, dtype):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", choices=["int", "fp16", "fp32"], default="int")
-    ap.add_argument("--backend", default="cuda")
+    ap.add_argument("--backend", default="cuda", type=canonical_backend)
     ap.add_argument("--artifact", default="artifacts/qwen3-0.6b-int8")
     ap.add_argument("--seqlen", type=int, default=2048)
     ap.add_argument("--limit", type=int, default=0, help="segments (0=all)")

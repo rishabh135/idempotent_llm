@@ -16,6 +16,23 @@ import torch
 
 BACKENDS = ("reference", "cuda")
 
+# "reference" names a ROLE — the correctness oracle and cross-device
+# determinism witness (spec §2) — not a device. It is nonetheless CPU-only by
+# necessity (exact integer matmul exists on CPU; CUDA needs `torch._int_mm`),
+# so callers reach for "cpu" naturally. Accept that spelling at API
+# boundaries and normalize; `int_gemm` below only ever sees canonical names,
+# keeping the per-GEMM dispatch a plain string compare.
+BACKEND_ALIASES = {"cpu": "reference"}
+
+
+def canonical_backend(name: str) -> str:
+    """Normalize a user-supplied backend name. Raises on anything unknown."""
+    canon = BACKEND_ALIASES.get(name, name)
+    if canon not in BACKENDS:
+        raise ValueError(f"unknown backend {name!r}; expected one of "
+                         f"{BACKENDS + tuple(BACKEND_ALIASES)}")
+    return canon
+
 
 # cuBLASLt's int8 CUTLASS kernels issue speculative reads past the end of
 # their operands (observed up to 16KB by compute-sanitizer; the values are

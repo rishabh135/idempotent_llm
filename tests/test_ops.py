@@ -8,7 +8,13 @@ import pytest
 import torch
 
 from detllm import dyadic as dy
-from detllm.backends import int_gemm, int_gemm_u8i8, int_gemm_u16i8
+from detllm.backends import (
+    BACKENDS,
+    canonical_backend,
+    int_gemm,
+    int_gemm_u8i8,
+    int_gemm_u16i8,
+)
 from detllm.ops import (
     apply_int_rope,
     di_exp,
@@ -22,6 +28,24 @@ from detllm.ops.di_softmax import PROB_ONE
 from detllm.ops.rope import ROPE_FRAC_BITS, build_rope_tables
 
 I64 = torch.int64
+
+
+class TestBackendNames:
+    """Backend naming: "reference" is a role name (spec §2) and "cpu" is an
+    accepted alias for it. int_gemm itself stays canonical-only — the alias
+    resolves at API boundaries so per-GEMM dispatch stays a string compare."""
+
+    def test_cpu_aliases_reference(self):
+        assert canonical_backend("cpu") == "reference"
+
+    def test_canonical_names_pass_through(self):
+        for name in BACKENDS:
+            assert canonical_backend(name) == name
+
+    def test_unknown_backend_rejected(self):
+        for bad in ("mps", "metal", "CPU", "reference "):
+            with pytest.raises(ValueError):
+                canonical_backend(bad)
 
 
 class TestIntGemm:

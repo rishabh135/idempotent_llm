@@ -106,9 +106,11 @@ class IntQwen3:
     def __init__(self, artifact_dir: str, backend: str = "reference"):
         from safetensors.torch import load_file
 
-        assert backend in ("reference", "cuda")
-        self.backend = backend
-        self.device = torch.device("cpu" if backend == "reference" else "cuda")
+        from .backends import canonical_backend
+
+        self.backend = canonical_backend(backend)  # "cpu" is an alias
+        self.device = torch.device(
+            "cpu" if self.backend == "reference" else "cuda")
         with open(os.path.join(artifact_dir, "config.json")) as f:
             self.cfg = json.load(f)
         tensors = load_file(os.path.join(artifact_dir, "model.safetensors"))
