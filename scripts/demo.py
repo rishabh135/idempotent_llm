@@ -1,6 +1,6 @@
 """Determinism demo: one prompt, many execution configurations, one hash.
 
-Sonnet 18 (first 64 tokens) → greedy-generate N tokens → chain-hash the
+Shakespeare's Sonnet 18 (first 64 tokens) → greedy-generate N tokens → chain-hash the
 int32 logits of every generated step (h = sha256(h_prev ‖ step_logits_bytes))
 and separately the token ids. Every config runs the full 512 steps so the
 FINAL hash is directly comparable (the CPU reference takes ~7 min for

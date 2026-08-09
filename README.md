@@ -27,21 +27,41 @@ completion. Framework "deterministic mode" flags only pin run-to-run order
 on one machine at one shape — they do nothing for batch invariance or
 cross-hardware reproducibility.
 
+Crossing hardware makes the problem structural rather than incidental.
+Different chips have different tensor-core designs, different internal
+accumulation precisions, and different fastest reduction orders, so
+bit-identical floating-point results across architectures mean either
+abandoning each chip's optimized paths or abandoning floating point.
+PyTorch says as much in its own reproducibility notes: results are not
+guaranteed across releases or platforms, and need not match between CPU and
+GPU even with identical seeds.
+
 The common fix is to write **batch-invariant floating-point kernels**
 that pin a fixed reduction order everywhere. That works, but it treats the
 symptom: determinism holds only for those specific kernels on that
 platform, and bit-identical results across different hardware are still
 out of reach.
 
+The next instinct — quantize to int8 and let integer arithmetic do the
+rest — doesn't fix it either, because mainstream int8 stacks are not
+actually integer. Runtimes still perform accumulations, activations, and
+sampling in float, and every dequantize→compute→requantize cycle hands the
+result back to platform-dependent rounding. A team expecting int8 GGUF
+quantization to make llama.cpp reproducible found that it did not; broader
+sweeps across BF16, FP8, INT8 and INT4 report the same pattern, with some
+— but not all — INT-quantized models coming out non-deterministic. Integer
+*storage* is not integer *arithmetic*.
+
 This project removes the cause instead: **integer addition is exactly
 associative and commutative**, so every reduction — GEMM accumulation,
 softmax sums, norm sums — yields the same bits in *any* order, on *any*
-correct hardware. Once the entire forward pass is integer (this repo's
-contribution: including softmax, RMSNorm, SwiGLU, and RoPE, via I-LLM's
-dyadic-scale machinery), determinism is not an engineering discipline to
-maintain — it is a property of the arithmetic. That is what makes the
-strongest check here possible at all: an A100's tensor-core GEMMs and a
-CPU's plain integer matmuls produce **identical logits, bit for bit**.
+correct hardware. Cashing that in requires the *entire* forward pass to be
+integer — no float anywhere, softmax, RMSNorm, SwiGLU and RoPE included
+(this repo's contribution, via I-LLM's dyadic-scale machinery). Determinism
+then stops being an engineering discipline to maintain and becomes a
+property of the arithmetic. That is what makes the strongest check here possible at all:
+an A100's tensor cores, an H100's, and a CPU's plain integer matmuls
+produce **identical logits, bit for bit**.
 
 Integer-only inference itself is not new — I-LLM and its predecessors
 (I-BERT, I-ViT) target *efficiency* on integer-only edge hardware, and
@@ -79,8 +99,9 @@ scripts/        perplexity eval, ablations, benchmarks, diagnostics
 
 ## Demo: one prompt, three machines, one hash
 
-`scripts/demo.py` is the whole thesis in one table. It takes the first 64
-tokens of Sonnet 18, greedy-generates 512 tokens, and chain-hashes the raw
+`scripts/demo.py` is the whole thesis in one table. As an example prompt it
+takes the first 64 tokens of Shakespeare's Sonnet 18 ("Shall I compare thee
+to a summer's day?"), greedy-generates 512 tokens, and chain-hashes the raw
 int32 logits of every step (plus the token ids, separately). It then runs
 that same computation through radically different execution paths:
 
