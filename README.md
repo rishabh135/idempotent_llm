@@ -1,4 +1,4 @@
-# DetLLM — Fully deterministic LLM Inference
+# DetLLM — Fully Deterministic LLM Inference
 
 An inference pipeline for [Qwen/Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B)
 where the entire forward pass — every matmul, normalization, activation,
