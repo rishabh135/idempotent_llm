@@ -107,18 +107,16 @@ abbreviated):
 | fp16 | CUDA, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline | 20 s |
 | fp16 | CUDA, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** | 21 s |
 | fp16 | CUDA, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** | 20 s |
-| fp16 | **pure CPU** — *same dtype as fp16 baseline* | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** | 35 s |
-| fp32 | CUDA, batch 1 | `c9f8eeb64b0d` | `72a290237334` | baseline for the fp32 CPU row | 25 s |
-| fp32 | **pure CPU** — *same dtype as the row above* | `86cbf54fdd32` | `72a290237334` | ❌ logits fork **@ step 0** | 84 s |
+| fp16 | **pure CPU** | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** | 35 s |
 
-The CPU rows are the apples-to-apples mirror of int8's CPU row: at
-**matched precision** (fp16-vs-fp16 and fp32-vs-fp32), merely moving from
-CUDA to CPU forks the logits at step 0 — different BLAS, different
-reduction orders, and for fp16-on-CPU a different internal accumulation
-path, because CPUs don't natively execute fp16 math the way tensor cores
-do. The int8 pipeline's CPU run, a far *more* different implementation
-(no cuBLASLt, no Triton, no CUDA graphs), matches its GPU run bit for
-bit.
+Row for row, the two halves mirror each other: same prompt, same 512
+steps, same four execution variations — batch 1, batched with random
+co-prompts, split prefill/decode, and CPU. Every fp16 variation forks the
+logits at step 0 (different reduction orders in different kernels; the
+CPU additionally uses a different internal accumulation path, since CPUs
+don't natively execute fp16 math the way tensor cores do). Every int8
+variation — including the pure-CPU implementation with no cuBLASLt, no
+Triton, and no CUDA graphs — produces one identical hash.
 
 Also worth savoring: every float row forks its **logits at step 0**, yet
 all six float *token* hashes match — greedy decoding hid the divergence
