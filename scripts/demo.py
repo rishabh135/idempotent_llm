@@ -268,7 +268,19 @@ def main():
                     help="generated tokens for every config (default 512)")
     ap.add_argument("--artifact", default=ART_DEFAULT)
     ap.add_argument("--skip-fp16", action="store_true")
+    ap.add_argument("--checkpoint-every", type=int, metavar="N",
+                    help="print a hash every N steps instead of at "
+                         "64/128/256/512 (the final step always prints)")
     args = ap.parse_args()
+
+    if args.checkpoint_every is not None:
+        if args.checkpoint_every < 1:
+            ap.error("--checkpoint-every must be >= 1")
+        # HashChain.update reads this global per step, so setting it here —
+        # before any chain exists — is all it takes to re-space the ladder
+        global CHECKPOINTS
+        CHECKPOINTS = tuple(range(args.checkpoint_every, args.steps + 1,
+                                  args.checkpoint_every))
 
     import hashlib as _h
     with open(f"{args.artifact}/model.safetensors", "rb") as f:
