@@ -1,7 +1,8 @@
 # Design notes & deviation log
 
 Working notes for the deterministic integer-only Qwen3-0.6B pipeline.
-Spec references are to the project spec; paper references are to I-LLM
+Spec references (§N) are to the original project specification, reproduced
+verbatim in [SPEC.md](SPEC.md); paper references are to I-LLM
 (arXiv:2405.17849v2), whose Eqs. 2–8 / 10 and Appendix Algorithms 1–4 were
 read and transcribed before implementation.
 

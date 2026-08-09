@@ -15,8 +15,9 @@ arithmetic and shift-based integer non-linear operators — with analytic
 (training-free) smoothing. WikiText2 perplexity: **20.72 (int8) vs 20.95
 (fp16 baseline)**; CUDA-graphed integer decode runs at **3.6× the fp16
 eager baseline at batch 1 and 3.4× at batch 8** (106 / 783 tok/s on an
-A100) while staying bit-exact. See [RESULTS.md](RESULTS.md) for all
-numbers; design decisions and deviation log in [NOTES.md](NOTES.md).
+A100) while staying bit-exact. The original specification is in [SPEC.md](SPEC.md);
+all numbers in [RESULTS.md](RESULTS.md); design decisions and deviation
+log in [NOTES.md](NOTES.md).
 
 ## Layout
 
