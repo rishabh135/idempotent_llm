@@ -22,6 +22,14 @@ Acceptance was int ≤ 1.05 × fp16 → **passed** (the int pipeline is slightly
 *below* the float baseline; per-token dynamic quantization plus analytic
 smoothing acts as mild regularization at this scale).
 
+Re-run on an H100 / Xeon Platinum 8480+ box (torch 2.13.0+cu130, same
+artifact): int8 **20.7170** — identical to all four decimals, as it must
+be. The fp16 baseline came back **20.9552** vs 20.9549 in the table above.
+The headline
+determinism claim, showing up unprompted in the accuracy table: the integer
+number is a property of the arithmetic, the float number is a property of
+the machine.
+
 C4 (validation, 40 segments of 2048, secondary):
 
 | model | C4 PPL | ratio |
@@ -76,6 +84,11 @@ Checks run via `tests/test_determinism.py` (fast set) and `-m slow` (4k long-con
 Fast set: `9 passed in 1562s` (the cross-device check runs 600 full CPU
 reference forwards — slow by design, exact by construction).
 
+Re-run on the H100 / Xeon box: the whole non-slow suite is `78 passed,
+1 deselected in 506s` (`make test`), determinism checks included. Note the
+fast set is 11 tests there, not the 9 recorded above — `test_determinism.py`
+gained two since that line was written.
+
 ## §10 Performance
 
 A100, measured with `scripts/bench.py`. Three int8 configurations, each
@@ -101,6 +114,36 @@ One-time setup ≈ 55 s cold (inductor-disk-cached afterwards).
 
 **Acceptance (§10: decode ≥ fp16 eager): PASSED at BOTH batch sizes**
 (3.6× / 3.4×, far beyond the 1.3× stretch goal).
+
+### Same grid on an H100 / Xeon Platinum 8480+
+
+| decode tok/s | fp16 eager | int8 eager | int8 compiled | int8 final | vs fp16 |
+|--------------|-----------|------------|---------------|------------|---------|
+| batch 1 | 19.5 | 2.8 | 5.8 | **73.8** | **3.8×** |
+| batch 8 | 157.9 | 22.3 | 43.4 | **566.7** | **3.6×** |
+
+Prefill tok/s (2048, batch 1): fp16 87,334; int8 eager 3,194; compiled
+7,839; graphed 7,878. Batch 8: fp16 152,137; int8 eager 2,502; compiled
+4,661; graphed 4,663.
+
+Acceptance passes here too, by a wider ratio (3.8× / 3.6×) — but the ratio
+improves partly because fp16 eager is *slower* on this box, so read the
+columns, not the multiplier. The absolute numbers split by regime:
+
+- **compute-bound work is much faster on Hopper**, as expected: fp16
+  prefill 1.8× the A100 (87,334 vs 48,898), and the eager int8 path — many
+  small kernels, throughput-bound — is 3–4× faster at both batch sizes.
+- **the graphed decode path is ~30% slower** (73.8 vs 106.3 at batch 1;
+  566.7 vs 783.3 at batch 8). For a 0.6B model under a whole-step CUDA
+  graph, per-step cost is dominated by fixed replay/launch overhead rather
+  than FLOPs, so it tracks host CPU and driver more than GPU class. Not
+  investigated further; flagged so the A100 numbers above are not read as a
+  floor.
+
+None of this affects any determinism claim — the §9.3 fast checks (1–4 plus
+the float-leak guard; the 4k long-context check is `-m slow` and was
+deselected) and the demo's four int8 configurations are all bit-exact on
+this box (see the README's H100 table).
 
 Two structural changes made layer-level compilation affordable (it was
 30–60 min of codegen before; 55 s after):
