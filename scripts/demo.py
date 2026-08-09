@@ -3,9 +3,9 @@
 Sonnet 18 (first 64 tokens) → greedy-generate N tokens → chain-hash the
 int32 logits of every generated step (h = sha256(h_prev ‖ step_logits_bytes))
 and separately the token ids. Every config runs the full 512 steps so the
-FINAL hash is directly comparable (the CPU reference takes ~25-35 min —
-the price of an independent exact code path; checkpoint hashes at
-64/128/256 let an impatient cross-machine run still be compared).
+FINAL hash is directly comparable (the CPU reference takes ~7 min for
+its 512 exact integer forwards; checkpoint hashes at 64/128/256 let a
+partial cross-machine run still be compared).
 
 int8 configs must produce IDENTICAL hashes at every checkpoint:
   int8-cuda-b1       batch 1, CUDA-graphed decode
@@ -25,7 +25,7 @@ the artifact sha256 is printed so runs are provably comparable), then:
 on e.g. an Apple-silicon Mac (the reference backend is the Apple path per
 spec §2 — x86 CPU, ARM CPU and NVIDIA tensor cores all print the same hash).
 
-Default full table runs in ~35-40 minutes (the CPU row dominates).
+Default full table runs in ~10 minutes (the CPU row dominates).
 """
 
 from __future__ import annotations

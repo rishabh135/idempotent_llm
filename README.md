@@ -91,11 +91,40 @@ that same computation through radically different execution paths:
   one-by-one, then generation;
 - **pure-CPU reference** — no cuBLASLt, no Triton, no CUDA graphs; a
   completely independent implementation of the same integer semantics
-  (slow: ~30 min for its 512 exact integer forwards).
+  (~7 min for its 512 exact integer forwards).
 
 All four print the **same hash**. The same variations applied to the fp16
 model (including a batch of 8 *identical copies* of the prompt) each
-diverge, and the demo prints the step at which they fork.
+diverge, and the demo prints the step at which they fork. Output from this
+repo's A100 box (hashes abbreviated):
+
+```
+artifact sha256: 6658cea4dd89c613…
+
+config              @512 tokens/logits
+int8-cuda-b1        e28d5cc924e9 / 64430dd985f8   (38s)
+int8-cuda-b8        e28d5cc924e9 / 64430dd985f8   (31s)
+int8-cuda-split     e28d5cc924e9 / 64430dd985f8   (32s)
+int8-cpu-b1         e28d5cc924e9 / 64430dd985f8   (391s)
+fp16-cuda-b1        72a290237334 / af3ffdc1592d   (20s)
+fp16-cuda-b8dup     72a290237334 / 22de70940d24   (19s)
+fp16-cuda-split     72a290237334 / 229b14ee3995   (20s)
+
+int8: int8-cuda-b8    == int8-cuda-b1 for all 512 compared steps ✓
+int8: int8-cuda-split == int8-cuda-b1 for all 512 compared steps ✓
+int8: int8-cpu-b1     == int8-cuda-b1 for all 512 compared steps ✓
+fp16: fp16-cuda-b8dup vs fp16-cuda-b1 -> logits diverged at step 0
+fp16: fp16-cuda-split vs fp16-cuda-b1 -> logits diverged at step 0
+
+VERDICT: int8 pipeline bit-identical across every configuration
+```
+
+A detail worth savoring in the fp16 rows: the *token* hashes match even
+though the *logits* fork at step 0. Greedy decoding hid the divergence
+below the argmax for 512 straight steps — this time. That is precisely
+the failure mode that makes float nondeterminism so insidious: it is
+invisible until one near-tie flips, and then two "identical" deployments
+quietly disagree.
 
 ```bash
 # full table (~35-40 min; the CPU row dominates)
