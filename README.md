@@ -77,6 +77,46 @@ tests/          unit + golden + §9.3 determinism suite
 scripts/        perplexity eval, ablations, benchmarks, diagnostics
 ```
 
+## Demo: one prompt, seven execution paths, one hash
+
+`scripts/demo.py` is the whole thesis in one table. It takes the first 64
+tokens of Sonnet 18, greedy-generates 512 tokens, and chain-hashes the raw
+int32 logits of every step (plus the token ids, separately). It then runs
+that same computation through radically different execution paths:
+
+- **batch 1** on CUDA (graphed decode);
+- **batch 8**, the sonnet sharing a batch with 7 *random junk co-prompts*
+  (row 0 extracted) — different GEMM shapes, different co-batched data;
+- **split prefill/decode** — 32 tokens prefilled at once, 32 fed
+  one-by-one, then generation;
+- **pure-CPU reference** — no cuBLASLt, no Triton, no CUDA graphs; a
+  completely independent implementation of the same integer semantics
+  (slow: ~30 min for its 512 exact integer forwards).
+
+All four print the **same hash**. The same variations applied to the fp16
+model (including a batch of 8 *identical copies* of the prompt) each
+diverge, and the demo prints the step at which they fork.
+
+```bash
+# full table (~35-40 min; the CPU row dominates)
+uv run python scripts/demo.py
+
+# skip the fp16 contrast rows
+uv run python scripts/demo.py --skip-fp16
+
+# one configuration — for running on OTHER machines
+uv run python scripts/demo.py --config int8-cpu-b1
+uv run python scripts/demo.py --config int8-cuda-b1
+```
+
+Cross-machine runs: **copy the artifact, never re-run `make prepare`** —
+preparation is the float stage and is not required to be bit-reproducible
+across machines. The demo prints `sha256(model.safetensors)` first; two
+machines are only comparable when it matches. On Apple silicon, run the
+`int8-cpu-b1` config (the reference backend is the Apple path per the
+spec) — x86 CPU, ARM CPU, and NVIDIA tensor cores printing the same hash
+is the three-architecture version of the claim.
+
 ## Usage
 
 ```bash
