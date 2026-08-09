@@ -178,7 +178,7 @@ def run_int8(config: str, steps: int, artifact: str):
 def run_fp16(config: str, steps: int):
     from transformers import AutoModelForCausalLM
     dev = "cuda" if "cuda" in config else "cpu"
-    dtype = torch.float16 if dev == "cuda" else torch.float32
+    dtype = torch.float16 if config.startswith("fp16") else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         "Qwen/Qwen3-0.6B", dtype=dtype).eval().to(dev)
     _, ids = get_prompt_ids()
@@ -244,8 +244,8 @@ def run_fp16(config: str, steps: int):
 # ---------------------------------------------------------------------------
 
 INT8_CONFIGS = ["int8-cuda-b1", "int8-cuda-b8", "int8-cuda-split", "int8-cpu-b1"]
-FP16_CONFIGS = ["fp16-cuda-b1", "fp16-cuda-b8", "fp16-cuda-b8dup",
-                "fp16-cuda-split"]
+FLOAT_CONFIGS = ["fp16-cuda-b1", "fp16-cuda-b8", "fp16-cuda-split",
+                 "fp32-cuda-b1", "fp32-cpu-b1"]
 
 
 def run_config(name: str, steps: int, artifact: str):
@@ -270,7 +270,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", help="run one configuration (for cross-machine "
-                                     f"runs): {INT8_CONFIGS + FP16_CONFIGS}")
+                                     f"runs): {INT8_CONFIGS + FLOAT_CONFIGS}")
     ap.add_argument("--steps", type=int, default=512,
                     help="generated tokens for every config (default 512)")
     ap.add_argument("--artifact", default=ART_DEFAULT)
@@ -293,7 +293,7 @@ def main():
         return
 
     results = {}
-    configs = list(INT8_CONFIGS) + ([] if args.skip_fp16 else FP16_CONFIGS)
+    configs = list(INT8_CONFIGS) + ([] if args.skip_fp16 else FLOAT_CONFIGS)
     for name in configs:
         steps = args.steps
         print(f"running {name} ({steps} tokens)...", flush=True)
@@ -323,14 +323,16 @@ def main():
             print(f"int8: {name} DIVERGED from int8-cuda-b1 at step {div} ✗")
             ok = False
     if not args.skip_fp16:
-        base_fp = results["fp16-cuda-b1"]
-        for name in FP16_CONFIGS[1:]:
-            ldiv = first_divergence(base_fp[1], results[name][1])
-            tdiv = first_divergence(base_fp[0], results[name][0])
+        pairs = [("fp16-cuda-b8", "fp16-cuda-b1"),
+                 ("fp16-cuda-split", "fp16-cuda-b1"),
+                 ("fp32-cpu-b1", "fp32-cuda-b1")]  # matched dtype, hw only
+        for name, base in pairs:
+            ldiv = first_divergence(results[base][1], results[name][1])
+            tdiv = first_divergence(results[base][0], results[name][0])
             lw = f"logits diverged @ step {ldiv}" if ldiv is not None else "logits identical"
             tw = f"TOKENS diverged @ step {tdiv}" if tdiv is not None \
                 else "tokens survived (argmax hid it)"
-            print(f"fp16: {name} vs fp16-cuda-b1 -> {lw}; {tw}")
+            print(f"float: {name} vs {base} -> {lw}; {tw}")
     print("\nVERDICT:", "int8 pipeline bit-identical across every configuration"
           if ok else "INT8 DIVERGENCE — this is a bug, report it")
     sys.exit(0 if ok else 1)

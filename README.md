@@ -106,17 +106,24 @@ abbreviated):
 | int8 | **pure CPU** (independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 391 s |
 | fp16 | CUDA, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline | 20 s |
 | fp16 | CUDA, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** | 21 s |
-| fp16 | CUDA, batch 8 — 8 **copies of itself** | `22de70940d24` | `72a290237334` | ❌ logits fork **@ step 0** | 19 s |
 | fp16 | CUDA, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** | 20 s |
+| fp32 | CUDA, batch 1 | `c9f8eeb64b0d` | `72a290237334` | baseline for the CPU row | 25 s |
+| fp32 | **pure CPU** — *same dtype as the row above* | `86cbf54fdd32` | `72a290237334` | ❌ logits fork **@ step 0** | 84 s |
 
-A detail worth savoring in the fp16 rows: every variant forks the
-**logits at step 0**, yet all four *token* hashes match — greedy decoding
-hid the divergence below the argmax for 512 straight steps. The measured
-mechanism: batch composition perturbs this prompt's step-0 logits by up
-to **0.094**, while the top-1/top-2 margin happens to be **2.66** — a 28×
-cushion. Every generation is one near-tie away from two "identical"
-deployments quietly disagreeing, which is precisely what makes float
-nondeterminism so insidious — and what the int8 rows prove is optional.
+The last two rows are the apples-to-apples mirror of int8's CPU row: at
+**identical fp32 precision**, merely moving from CUDA to CPU forks the
+logits at step 0 (different BLAS, different reduction orders) — while the
+int8 pipeline's CPU run, a far more different implementation (no cuBLASLt,
+no Triton, no CUDA graphs), matches its GPU run bit for bit.
+
+Also worth savoring: every float row forks its **logits at step 0**, yet
+all six float *token* hashes match — greedy decoding hid the divergence
+below the argmax for 512 straight steps. The measured mechanism: batch
+composition perturbs this prompt's step-0 logits by up to **0.094**, while
+the top-1/top-2 margin happens to be **2.66** — a 28× cushion. Every
+generation is one near-tie away from two "identical" deployments quietly
+disagreeing, which is precisely what makes float nondeterminism so
+insidious — and what the int8 rows prove is optional.
 
 ```bash
 # full table (~35-40 min; the CPU row dominates)
