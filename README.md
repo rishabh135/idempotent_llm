@@ -44,13 +44,16 @@ out of reach.
 
 The next instinct — quantize to int8 and let integer arithmetic do the
 rest — doesn't fix it either, because mainstream int8 stacks are not
-actually integer. Runtimes still perform accumulations, activations, and
-sampling in float, and every dequantize→compute→requantize cycle hands the
-result back to platform-dependent rounding. A team expecting int8 GGUF
-quantization to make llama.cpp reproducible found that it did not; broader
-sweeps across BF16, FP8, INT8 and INT4 report the same pattern, with some
-— but not all — INT-quantized models coming out non-deterministic. Integer
-*storage* is not integer *arithmetic*.
+actually integer. I-LLM (arXiv:2405.17849) surveys the field on exactly
+this point: prior post-training methods such as SmoothQuant and OmniQuant
+use *simulated* quantization, keeping integers at the inputs and outputs
+while the compute-intensive operations run on dequantized floating-point
+values, and their "inference pipelines still involve partially FP
+operations on non-linear operators such as Softmax, Normalization, and
+SiLU". Every one of those surviving float operations, and every
+dequantize→compute→requantize cycle around it, hands the result back to
+platform-dependent rounding. Integer *storage* is not integer
+*arithmetic*.
 
 This project removes the cause instead: **integer addition is exactly
 associative and commutative**, so every reduction — GEMM accumulation,
@@ -59,9 +62,9 @@ correct hardware. Cashing that in requires the *entire* forward pass to be
 integer — no float anywhere, softmax, RMSNorm, SwiGLU and RoPE included
 (this repo's contribution, via I-LLM's dyadic-scale machinery). Determinism
 then stops being an engineering discipline to maintain and becomes a
-property of the arithmetic. That is what makes the strongest check here possible at all:
-an A100's tensor cores, an H100's, and a CPU's plain integer matmuls
-produce **identical logits, bit for bit**.
+property of the arithmetic. That is what makes the strongest check here
+possible at all: an A100's tensor cores, an H100's, and a CPU's plain
+integer matmuls produce **identical logits, bit for bit**.
 
 Integer-only inference itself is not new — I-LLM and its predecessors
 (I-BERT, I-ViT) target *efficiency* on integer-only edge hardware, and
