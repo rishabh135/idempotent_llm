@@ -168,13 +168,10 @@ def ilog2_floor(a: IntLike) -> IntLike:
     """
     _check_int(a, "a")
     if isinstance(a, Tensor):
-        v = a.to(torch.int64)
-        r = torch.zeros_like(v)
-        for s in (32, 16, 8, 4, 2, 1):
-            hit = v >= (1 << s)
-            r = r + hit.to(torch.int64) * s
-            v = torch.bitwise_right_shift(v, hit.to(torch.int64) * s)
-        return r
+        # custom op: ONE opaque node under torch.compile instead of a
+        # 6-step unrolled loop (Triton kernel on CUDA, original loop on CPU)
+        from .ops.int_prims import ilog2_i64
+        return ilog2_i64(a.to(torch.int64))
     if a < 1:
         raise ValueError("ilog2_floor requires a >= 1")
     return a.bit_length() - 1
@@ -186,17 +183,10 @@ def isqrt(a: IntLike) -> IntLike:
     """
     _check_int(a, "a")
     if isinstance(a, Tensor):
-        n = a.to(torch.int64)
-        rem = n.clone()
-        c = torch.zeros_like(n)
-        d = 1 << 62
-        for _ in range(32):
-            t = c + d
-            ge = rem >= t
-            rem = torch.where(ge, rem - t, rem)
-            c = torch.bitwise_right_shift(c, 1) + torch.where(ge, torch.full_like(c, d), torch.zeros_like(c))
-            d >>= 2
-        return c
+        # custom op: ONE opaque node under torch.compile instead of a
+        # 32-step unrolled loop (Triton kernel on CUDA, original loop on CPU)
+        from .ops.int_prims import isqrt_i64
+        return isqrt_i64(a.to(torch.int64))
     if a < 0:
         raise ValueError("isqrt requires a >= 0")
     x, c, d = a, 0, 1 << 62

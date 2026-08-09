@@ -1,12 +1,13 @@
-"""§10 step 3: CUDA-graphed decode via inductor-managed graphs.
+"""§10 step 3: CUDA-graphed decode.
 
-Manual `torch.cuda.CUDAGraph` capture around dynamo-compiled callables is
-fragile (inductor owns buffer reuse and autotuning; mixing produced flaky
-illegal-memory-access failures). The robust pattern — used by gpt-fast and
-vLLM — is to let inductor manage the graphs: the per-layer function is
-compiled with mode='reduce-overhead' at STATIC shapes, weights and cache
-buffers are marked static-address, and each decode step replays 28 small
-per-layer graphs plus a handful of eager glue kernels.
+Default architecture (mode="capture"): the decode step runs through ONE
+generic layer graph compiled by inductor (per-layer constants are 0-dim
+tensors, so all 28 layers share it; loop-heavy integer primitives are
+opaque custom ops, so it compiles in ~1 min) plus the fused Triton
+attention kernel, and the WHOLE step is then recorded as a manual
+torch.cuda.CUDAGraph — steady-state decode is one replay + a handful of
+eager glue kernels. mode="layers" is an alternative that lets inductor
+manage per-layer graphs via mode='reduce-overhead' instead.
 
 Static-shape decode (bit-exact by construction):
 - Attention runs over the full bucketed cache CAPACITY with the validity
@@ -41,7 +42,7 @@ def _next_bucket(n: int) -> int:
 
 class GraphedDecode:
     def __init__(self, model: IntQwen3, cache: KVCache, lens: torch.Tensor,
-                 mode: str = "capture"):
+                 mode: str = "capture", layer_compile: bool = True):
         """model: cuda backend. cache: as returned by a (dynamic-mode)
         prefill forward. lens: int64 [B] true prompt lengths (device) —
         the next token's position per sequence.
@@ -62,6 +63,10 @@ class GraphedDecode:
         cache.len_idx = torch.zeros(1, dtype=I64, device=dev)
         self.graph = None
         self.out = None
+        if layer_compile and mode == "capture" and model._layer_compiled is None:
+            # one generic compiled layer graph (per-layer constants are
+            # tensors; ~1 min cold, inductor-disk-cached afterwards)
+            model.enable_layer_compile()
         if mode == "layers":
             for t in (self.ids_buf, self.pos_buf, cache.len_idx):
                 torch._dynamo.mark_static_address(t)

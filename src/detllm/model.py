@@ -59,7 +59,9 @@ class LayerWeights:
     vq_m: torch.Tensor = None; vq_k: torch.Tensor = None  # V cache quant scale
     # per-element column scale for merged attention output (precomputed ints)
     attn_out_col_m: torch.Tensor = None
-    attn_out_col_k: int = 0
+    attn_out_col_k: torch.Tensor = None
+    idx: int = 0                              # diagnostics only (aux dict)
+    k_rowk: torch.Tensor = None               # OUT_FRAC_BITS + k_norm_k
 
 
 @dataclass
@@ -78,30 +80,26 @@ class KVCache:
     def seq_len(self) -> int:
         return self.length
 
-    def append(self, li: int, k8: torch.Tensor, v8: torch.Tensor):
-        if self.static_cap:
-            # graph-capturable write at a device-tensor offset
-            self.k8[li].index_copy_(2, self.len_idx, k8)
-            self.v8[li].index_copy_(2, self.len_idx, v8)
-            return
-        B, n_kv, T, hd = k8.shape
-        if len(self.k8) <= li:
-            cap = max(256, T)
-            self.k8.append(k8.new_zeros(B, n_kv, cap, hd))
-            self.v8.append(v8.new_zeros(B, n_kv, cap, hd))
-            self.k8[li][:, :, :T] = k8
-            self.v8[li][:, :, :T] = v8
-            return
+    def alloc(self, li: int, B: int, n_kv: int, hd: int, need: int,
+              device=None):
+        cap = max(256, need)
+        z = torch.zeros(B, n_kv, cap, hd, dtype=torch.int8,
+                        device=device if device is not None else
+                        (self.valid.device if self.valid is not None else None))
+        assert len(self.k8) == li
+        self.k8.append(z)
+        self.v8.append(torch.zeros_like(z))
+
+    def ensure(self, li: int, need: int):
         cap = self.k8[li].shape[2]
-        need = self.length + T
-        if need > cap:
-            new_cap = max(need, cap * 2)
-            for buf in (self.k8, self.v8):
-                nb = buf[li].new_zeros(B, n_kv, new_cap, hd)
-                nb[:, :, :self.length] = buf[li][:, :, :self.length]
-                buf[li] = nb
-        self.k8[li][:, :, self.length:need] = k8
-        self.v8[li][:, :, self.length:need] = v8
+        if need <= cap:
+            return
+        new_cap = max(need, cap * 2)
+        for buf in (self.k8, self.v8):
+            B, n_kv, _, hd = buf[li].shape
+            nb = buf[li].new_zeros(B, n_kv, new_cap, hd)
+            nb[:, :, :self.length] = buf[li][:, :, :self.length]
+            buf[li] = nb
 
 
 class IntQwen3:
@@ -136,25 +134,28 @@ class IntQwen3:
         self.head_w8t = g("head.w8t"); self.head_m = g("head.m"); self.head_k = c["head"]["k"]
         self.rope_cos = g("rope.cos"); self.rope_sin = g("rope.sin")
 
+        def ct(v):  # 0-dim device tensor: per-layer constants must NOT be
+            return torch.tensor(v, dtype=torch.int64, device=dev)  # py ints
+
         self.layers: list[LayerWeights] = []
         for i in range(self.n_layers):
             p = f"layers.{i}."
             Lc = c["layers"][i]
             lw = LayerWeights(
-                q_w8t=g(p + "q.w8t"), q_m=g(p + "q.m"), q_k=Lc["q"]["k"],
-                k_w8t=g(p + "k.w8t"), k_m=g(p + "k.m"), k_k=Lc["k"]["k"],
-                v_w8t=g(p + "v.w8t"), v_m=g(p + "v.m"), v_k=Lc["v"]["k"],
-                o_w8t=g(p + "o.w8t"), o_m=g(p + "o.m"), o_k=Lc["o"]["k"],
-                gate_w8t=g(p + "gate.w8t"), gate_m=g(p + "gate.m"), gate_k=Lc["gate"]["k"],
-                up_w8t=g(p + "up.w8t"), up_m=g(p + "up.m"), up_k=Lc["up"]["k"],
-                down_w8t=g(p + "down.w8t"), down_m=g(p + "down.m"), down_k=Lc["down"]["k"],
-                q_norm_m=g(p + "q_norm.m"), q_norm_k=Lc["q_norm_k"],
-                k_norm_m=g(p + "k_norm.m"), k_norm_k=Lc["k_norm_k"],
-                qs_m=g(p + "qs_m"), qs_k=Lc["qs_k"],
-                as_m=g(p + "as_m"), as_k=Lc["as_k"],
-                ms_m=g(p + "ms_m"), ms_k=Lc["ms_k"],
-                ds_m=g(p + "ds_m"), ds_k=Lc["ds_k"],
-                os_m=g(p + "os_m"), os_k=Lc["os_k"],
+                q_w8t=g(p + "q.w8t"), q_m=g(p + "q.m"), q_k=ct(Lc["q"]["k"]),
+                k_w8t=g(p + "k.w8t"), k_m=g(p + "k.m"), k_k=ct(Lc["k"]["k"]),
+                v_w8t=g(p + "v.w8t"), v_m=g(p + "v.m"), v_k=ct(Lc["v"]["k"]),
+                o_w8t=g(p + "o.w8t"), o_m=g(p + "o.m"), o_k=ct(Lc["o"]["k"]),
+                gate_w8t=g(p + "gate.w8t"), gate_m=g(p + "gate.m"), gate_k=ct(Lc["gate"]["k"]),
+                up_w8t=g(p + "up.w8t"), up_m=g(p + "up.m"), up_k=ct(Lc["up"]["k"]),
+                down_w8t=g(p + "down.w8t"), down_m=g(p + "down.m"), down_k=ct(Lc["down"]["k"]),
+                q_norm_m=g(p + "q_norm.m"), q_norm_k=ct(Lc["q_norm_k"]),
+                k_norm_m=g(p + "k_norm.m"), k_norm_k=ct(Lc["k_norm_k"]),
+                qs_m=g(p + "qs_m"), qs_k=ct(Lc["qs_k"]),
+                as_m=g(p + "as_m"), as_k=ct(Lc["as_k"]),
+                ms_m=g(p + "ms_m"), ms_k=ct(Lc["ms_k"]),
+                ds_m=g(p + "ds_m"), ds_k=ct(Lc["ds_k"]),
+                os_m=g(p + "os_m"), os_k=ct(Lc["os_k"]),
                 kq_m=g(p + "kq_m"), kq_k=g(p + "kq_k"),
                 ks_m=g(p + "ks_m"), ks_k=g(p + "ks_k"),
                 vq_m=g(p + "vq_m"), vq_k=g(p + "vq_k"),
@@ -167,7 +168,9 @@ class IntQwen3:
             # q head h uses kv head h // group; channel c = head*hd + d
             per_q_head = aligned.repeat_interleave(group)          # [n_q]
             lw.attn_out_col_m = per_q_head.repeat_interleave(self.hd)  # [n_q*hd]
-            lw.attn_out_col_k = vk_shared + (P_OUT_BITS - 1)  # probs k
+            lw.attn_out_col_k = ct(vk_shared + (P_OUT_BITS - 1))  # probs k
+            lw.idx = i
+            lw.k_rowk = ct(int(OUT_FRAC_BITS) + Lc["k_norm_k"])
             self.layers.append(lw)
         self._layer_compiled = None  # set by enable_layer_cudagraphs()
         # device scalar constants (CUDA-graph capture forbids H2D copies, so
@@ -263,7 +266,14 @@ class IntQwen3:
         layer_fn = self._layer_compiled if (static and self._layer_compiled
                                             is not None) else self._layer
         for li, L in enumerate(self.layers):
-            h, k_res = layer_fn(li, L, h, k_res, mask, positions, cache)
+            if len(cache.k8) <= li:          # dynamic mode: allocate buffers
+                cache.alloc(li, B, self.n_kv, self.hd, S)
+            elif not static:                 # dynamic mode: ensure capacity
+                cache.ensure(li, S)
+            h, k_res = layer_fn(L, h, k_res, mask, positions,
+                                cache.k8[li], cache.v8[li],
+                                cache.len_idx, cache.length, S,
+                                bool(static))
 
         if not static:
             cache.length = S
@@ -273,14 +283,18 @@ class IntQwen3:
         logits = self._lm_head(x8, xm, xk)  # [B, T, vocab] int32
         return logits, xm, xk, cache
 
-    def _layer(self, li, L, h, k_res, mask, positions, cache):
+    def _layer(self, L, h, k_res, mask, positions, k8_buf, v8_buf,
+               len_idx, write_start, S, static):
         """One transformer layer (attention + MLP), residual in/out.
 
+        Takes the layer's K/V cache buffers as plain tensor arguments (NOT
+        the cache object + layer index — a Python `li` would make dynamo
+        specialize per layer; with tensorized per-layer constants this
+        function compiles to ONE graph reused by all 28 layers).
         Pure tensor computation apart from the cache K/V write (index_copy_
-        in static mode). Compiled per-layer in static decode mode."""
+        at a device offset in static mode)."""
         dev = self.device
         B, T = h.shape[0], h.shape[1]
-        S = mask.shape[-1]
         group = self.n_q // self.n_kv
         if True:
             # ---- attention ----
@@ -304,11 +318,11 @@ class IntQwen3:
             qkk = qkk + L.qs_k
             # Q: dynamic per-(token, head) int8
             one = torch.ones(B, self.n_q, T, 1, dtype=I64, device=dev)
-            q8, qm, qk = dy.quant_i8_pertoken(q, one, torch.full_like(one, qkk))
+            q8, qm, qk = dy.quant_i8_pertoken(q, one, torch.zeros_like(one) + qkk)
             # K: static per-(head, channel) int8 (c folded; quantized ONCE
             # here, straight into cache)
             k8 = dy.requant_i8_static(
-                kk, self._one1, self._k_rowk[li], self._one1, 0,
+                kk, self._one1, L.k_rowk, self._one1, 0,
                 L.kq_m.view(1, self.n_kv, 1, self.hd),
                 L.kq_k.view(1, self.n_kv, 1, self.hd))
             # V: static per-head int8 from the GEMM output directly
@@ -319,12 +333,16 @@ class IntQwen3:
                 L.vq_m.view(1, 1, self.n_kv, 1), L.vq_k.view(1, 1, self.n_kv, 1))
             v8 = v8.permute(0, 2, 1, 3)  # [B, n_kv, T, hd]
 
-            cache.append(li, k8, v8)
-            K8 = cache.k8[li][:, :, :S]              # [B, n_kv, S, hd]
-            V8 = cache.v8[li][:, :, :S]
+            if static:
+                k8_buf.index_copy_(2, len_idx, k8)
+                v8_buf.index_copy_(2, len_idx, v8)
+            else:
+                k8_buf[:, :, write_start:write_start + T] = k8
+                v8_buf[:, :, write_start:write_start + T] = v8
+            K8 = k8_buf[:, :, :S]                    # [B, n_kv, S, hd]
+            V8 = v8_buf[:, :, :S]
 
-            if (T == 1 and cache.static_cap and HAVE_TRITON
-                    and self.backend == "cuda"):
+            if T == 1 and static and HAVE_TRITON and self.backend == "cuda":
                 # fused Triton decode attention (static cache mode): the
                 # whole scores→DI-Exp→normalize→probs·V chain in one kernel,
                 # bit-identical to the paths below (see ops/fused_attn.py).
@@ -336,7 +354,7 @@ class IntQwen3:
                 one = torch.ones_like(sk)
                 tpos = torch.clamp(
                     round_half_away_div(lshift_t(one, sk), m_f), min=1)
-                attn = fused_int_attn(q8, K8, V8, cache.valid,
+                attn = fused_int_attn(q8, K8, V8, mask.reshape(B, S),
                                       tpos.view(B, self.n_q).contiguous(),
                                       self.n_q, group)
                 attn = attn.view(B, T, self.n_q * self.hd)
@@ -365,7 +383,7 @@ class IntQwen3:
                 # bit-exact and bounds the int64 softmax temporaries.
                 K8r = K8.repeat_interleave(group, dim=1)  # [B, n_q, S, hd]
                 V8r = V8.repeat_interleave(group, dim=1)
-                aux = {"li": li, "q": aux_q, "qkk": qkk - L.qs_k, "kk": kk,
+                aux = {"li": L.idx, "q": aux_q, "qkk": qkk - L.qs_k, "kk": kk,
                        "kkk": kkk, "Pv": Pv, "xm": xm, "xk": xk, "L": L}
                 budget = max(1, (1 << 27) // max(1, B * self.n_q * S))
                 CH = T if T <= budget else max(128, budget)
@@ -383,7 +401,7 @@ class IntQwen3:
 
             # merge-head requant (o-input smoothing multiply, then int8;
             # row scale starts at exact 1/2^os_k: probs k folded in col)
-            rk0 = torch.full((B, T, 1), L.os_k, dtype=I64, device=dev)
+            rk0 = torch.zeros(B, T, 1, dtype=I64, device=dev) + L.os_k
             a8, am, ak = dy.requant_i8_rowcol(attn.to(I64) * L.os_m,
                                               torch.ones_like(rk0), rk0,
                                               L.attn_out_col_m, L.attn_out_col_k)
@@ -430,8 +448,7 @@ class IntQwen3:
                 v = getattr(lw, f.name)
                 if isinstance(v, torch.Tensor):
                     torch._dynamo.mark_static_address(v)
-        for t in (self._one1, *self._k_rowk):
-            torch._dynamo.mark_static_address(t)
+        torch._dynamo.mark_static_address(self._one1)
         self._layer_compiled = torch.compile(self._layer, mode="reduce-overhead",
                                              dynamic=False)
 

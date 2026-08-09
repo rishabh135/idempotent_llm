@@ -13,10 +13,10 @@ reference produce identical bits).
 Based on a simplification of I-LLM (arXiv:2405.17849) — dyadic-number scale
 arithmetic and shift-based integer non-linear operators — with analytic
 (training-free) smoothing. WikiText2 perplexity: **20.72 (int8) vs 20.95
-(fp16 baseline)**; batch-1 decode with the CUDA-graphed integer pipeline
-runs at **2.7× the fp16 eager baseline** (80 vs 29 tok/s on an A100) while
-staying bit-exact. See [RESULTS.md](RESULTS.md) for all numbers; design
-decisions and deviation log in [NOTES.md](NOTES.md).
+(fp16 baseline)**; CUDA-graphed integer decode runs at **3.6× the fp16
+eager baseline at batch 1 and 3.4× at batch 8** (106 / 783 tok/s on an
+A100) while staying bit-exact. See [RESULTS.md](RESULTS.md) for all
+numbers; design decisions and deviation log in [NOTES.md](NOTES.md).
 
 ## Layout
 

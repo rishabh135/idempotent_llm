@@ -88,19 +88,33 @@ verified **bit-identical** to the one before it (tokens AND int32 logits;
   (`ops/fused_attn.py`: scores → DI-Exp → normalize → probs·V in one
   kernel, three streaming passes, zero materialized intermediates)
 
-| decode tok/s | fp16 eager | int8 eager | int8 compiled | int8 graphed+fused | vs fp16 |
-|--------------|-----------|------------|---------------|--------------------|---------|
-| batch 1 | 29.3 | 0.8 | 5.6 | **85.1** | **2.9×** |
-| batch 8 | 233.8 | 5.5 | 42.9 | 166.2 | 0.71× |
+| decode tok/s | fp16 eager | int8 eager | int8 compiled | int8 final | vs fp16 |
+|--------------|-----------|------------|---------------|------------|---------|
+| batch 1 | 29.3 | 0.8 | 5.6 | **106.3** | **3.6×** |
+| batch 8 | 233.8 | 5.5 | 42.9 | **783.3** | **3.4×** |
 
 Prefill tok/s (2048, batch 1): fp16 48,898; int8 eager 1,057; compiled 6,427.
 
-**Acceptance (§10: decode ≥ fp16 eager): PASSED at batch 1** (2.9×, beyond
-the 1.3× stretch goal). Batch 8 stands at 0.71× — the step is bounded by
-per-kernel overhead across the ~2,500 remaining small kernels inside the
-replay (GPU busy time is only ~18 ms of the 48 ms step); the identified
-next lever is layer-level compilation (fusing each layer's glue into one
-inductor graph under the whole-step CUDA graph).
+*final* = layer-level compilation (ONE generic inductor graph reused by all
+28 layers) under the whole-step CUDA graph, with the fused attention kernel.
+One-time setup ≈ 55 s cold (inductor-disk-cached afterwards).
+
+**Acceptance (§10: decode ≥ fp16 eager): PASSED at BOTH batch sizes**
+(3.6× / 3.4×, far beyond the 1.3× stretch goal).
+
+Two structural changes made layer-level compilation affordable (it was
+30–60 min of codegen before; 55 s after):
+- **loop-heavy primitives as custom ops** (`ops/int_prims.py`): isqrt's
+  32-step and ilog2's 6-step bit-loops each became ONE opaque graph node
+  backed by a tiny Triton kernel instead of ~200/~24 traced nodes per call
+  site — inductor scheduling is superlinear in graph size, so every
+  compilation got several times faster (CUDA kernels verified bit-identical
+  to the CPU loop implementations, which are the original algorithms);
+- **per-layer scalar constants tensorized** (0-dim int64 tensors instead of
+  Python ints) and the layer function takes its cache buffers as tensor
+  arguments instead of a Python layer index — dynamo specializes on Python
+  scalars, so these two changes collapse 28 per-layer compilations into
+  one generic graph.
 
 The Triton kernel reproduces the §5 integer semantics exactly (per the
 §10 constraint): DI-Exp's shift decomposition is computed per cache slot
@@ -110,7 +124,7 @@ against the independent eager formulation at both batch sizes, across
 cache-bucket growth, plus prefill/decode invariance and CUDA-vs-CPU
 cross-device checks.
 
-How the batch-1 win happened (details in NOTES.md):
+How the CUDA-graph decode works (details in NOTES.md):
 - eager decode launched ~96,000 CUDA kernels/step (isqrt/ilog2 bit-loops ×
   28 layers); op-level compile cut this to ~4,100 (GPU busy 20.7 ms/step)
   but ~200 ms/step of Python orchestration remained;

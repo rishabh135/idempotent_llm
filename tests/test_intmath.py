@@ -195,3 +195,51 @@ class TestIsqrt:
         assert torch.equal(im.isqrt(r * r), r)
         r1 = r[r >= 1]  # for r >= 1, (r+1)^2 > r^2 + 1, so floor holds
         assert torch.equal(im.isqrt(r1 * r1 + 1), r1)
+
+
+class TestCudaPrims:
+    """The CUDA Triton kernels behind detllm::isqrt_i64 / ilog2_i64 must be
+    bit-identical to the CPU tensor-loop implementations (which ARE the
+    original algorithms) over boundaries and random int64 sweeps."""
+
+    def _skip(self):
+        import pytest as _pytest
+        if not torch.cuda.is_available():
+            _pytest.skip("no CUDA")
+        from detllm.ops.int_prims import HAVE_TRITON
+        if not HAVE_TRITON:
+            _pytest.skip("no triton")
+
+    def test_isqrt_cuda_matches_cpu(self):
+        self._skip()
+        g = torch.Generator().manual_seed(0)
+        vals = torch.cat([
+            torch.randint(0, 1 << 62, (200000,), generator=g, dtype=torch.int64),
+            torch.arange(0, 70000, dtype=torch.int64),
+            torch.tensor([0, 1, 2, 3, 4, (1 << 31) - 1, 1 << 31,
+                          (1 << 52) + 7, (1 << 62) - 1], dtype=torch.int64),
+        ])
+        got = im.isqrt(vals.cuda()).cpu()
+        want = im.isqrt(vals)
+        assert torch.equal(got, want)
+
+    def test_ilog2_cuda_matches_cpu(self):
+        self._skip()
+        g = torch.Generator().manual_seed(1)
+        vals = torch.cat([
+            torch.randint(1, 1 << 62, (200000,), generator=g, dtype=torch.int64),
+            torch.arange(1, 1 << 16, dtype=torch.int64),
+            torch.tensor([1, 2, 3, (1 << 62) + 123, (1 << 63) - 1],
+                         dtype=torch.int64),
+        ])
+        got = im.ilog2_floor(vals.cuda()).cpu()
+        want = im.ilog2_floor(vals)
+        assert torch.equal(got, want)
+
+    def test_nonneg_random_shapes(self):
+        self._skip()
+        g = torch.Generator().manual_seed(2)
+        x = torch.randint(0, 1 << 50, (17, 33, 5), generator=g, dtype=torch.int64)
+        assert torch.equal(im.isqrt(x.cuda()).cpu(), im.isqrt(x))
+        y = x.clamp(min=1)
+        assert torch.equal(im.ilog2_floor(y.cuda()).cpu(), im.ilog2_floor(y))
