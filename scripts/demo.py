@@ -25,7 +25,7 @@ the artifact sha256 is printed so runs are provably comparable), then:
 on e.g. an Apple-silicon Mac (the reference backend is the Apple path per
 spec §2 — x86 CPU, ARM CPU and NVIDIA tensor cores all print the same hash).
 
-Default full table runs in ~10 minutes (the CPU row dominates).
+Default full table runs in ~35-40 minutes (the CPU row dominates).
 """
 
 from __future__ import annotations
