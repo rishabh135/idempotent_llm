@@ -109,13 +109,20 @@ uv run python scripts/demo.py --config int8-cpu-b1
 uv run python scripts/demo.py --config int8-cuda-b1
 ```
 
-Cross-machine runs: **copy the artifact, never re-run `make prepare`** —
-preparation is the float stage and is not required to be bit-reproducible
-across machines. The demo prints `sha256(model.safetensors)` first; two
-machines are only comparable when it matches. On Apple silicon, run the
-`int8-cpu-b1` config (the reference backend is the Apple path per the
-spec) — x86 CPU, ARM CPU, and NVIDIA tensor cores printing the same hash
-is the three-architecture version of the claim.
+Cross-machine runs: **use the published artifact, never re-run
+`make prepare`** — preparation is the float stage and is not required to
+be bit-reproducible across machines. The exact artifact used for the
+numbers in this repo is on the Hub:
+
+```bash
+hf download nathanbarry/detllm-qwen3-0.6b-int8 --local-dir artifacts/qwen3-0.6b-int8
+```
+
+The demo prints `sha256(model.safetensors)` on startup (this artifact:
+`6658cea4dd89c613…`); two machines are only comparable when it matches.
+On Apple silicon, run the `int8-cpu-b1` config (the reference backend is
+the Apple path per the spec) — x86 CPU, ARM CPU, and NVIDIA tensor cores
+printing the same hash is the three-architecture version of the claim.
 
 ## Usage
 

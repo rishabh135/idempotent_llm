@@ -2,8 +2,10 @@
 
 Sonnet 18 (first 64 tokens) → greedy-generate N tokens → chain-hash the
 int32 logits of every generated step (h = sha256(h_prev ‖ step_logits_bytes))
-and separately the token ids. Checkpoints at 64/128/256/512 steps let slow
-configs (CPU reference) stop early and still be compared exactly.
+and separately the token ids. Every config runs the full 512 steps so the
+FINAL hash is directly comparable (the CPU reference takes ~25-35 min —
+the price of an independent exact code path; checkpoint hashes at
+64/128/256 let an impatient cross-machine run still be compared).
 
 int8 configs must produce IDENTICAL hashes at every checkpoint:
   int8-cuda-b1       batch 1, CUDA-graphed decode
@@ -19,11 +21,11 @@ which each diverges from fp16-cuda-b1:
 Cross-machine use: copy the SAME artifact (never re-run prepare.py — the
 float calibration stage is not required to be reproducible across machines;
 the artifact sha256 is printed so runs are provably comparable), then:
-    uv run python scripts/demo.py --config int8-cpu-b1 --steps 128
+    uv run python scripts/demo.py --config int8-cpu-b1
 on e.g. an Apple-silicon Mac (the reference backend is the Apple path per
 spec §2 — x86 CPU, ARM CPU and NVIDIA tensor cores all print the same hash).
 
-Default full table runs in ~6-8 minutes on an A100 box.
+Default full table runs in ~35-40 minutes (the CPU row dominates).
 """
 
 from __future__ import annotations
@@ -240,8 +242,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", help="run one configuration (for cross-machine "
                                      f"runs): {INT8_CONFIGS + FP16_CONFIGS}")
-    ap.add_argument("--steps", type=int, default=0,
-                    help="generated tokens (default 512; int8-cpu default 128)")
+    ap.add_argument("--steps", type=int, default=512,
+                    help="generated tokens for every config (default 512)")
     ap.add_argument("--artifact", default=ART_DEFAULT)
     ap.add_argument("--skip-fp16", action="store_true")
     args = ap.parse_args()
@@ -253,7 +255,7 @@ def main():
           f"across machines when this matches)\n")
 
     if args.config:
-        steps = args.steps or (128 if args.config == "int8-cpu-b1" else 512)
+        steps = args.steps
         tc, lc, dt = run_config(args.config, steps, args.artifact)
         print(f"{args.config}  ({steps} tokens, {dt:.0f}s)")
         for n in CHECKPOINTS:
@@ -264,7 +266,7 @@ def main():
     results = {}
     configs = list(INT8_CONFIGS) + ([] if args.skip_fp16 else FP16_CONFIGS)
     for name in configs:
-        steps = args.steps or (128 if name == "int8-cpu-b1" else 512)
+        steps = args.steps
         print(f"running {name} ({steps} tokens)...", flush=True)
         results[name] = run_config(name, steps, args.artifact)
 
