@@ -100,26 +100,26 @@ macOS). The two NVIDIA boxes run all four; the Mac has no CUDA, so it runs
 the reference path only. Same artifact `6658cea4dd89c613…` for every row,
 512 generated tokens for every row, hashes abbreviated:
 
-| model | machine | execution path | logits hash @512 | tokens hash @512 | |
-|-------|---------|----------------|------------------|------------------|-|
-| int8 | A100 box | batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | A100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | A100 box | split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | A100 box | **CPU** reference (EPYC 7J13) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | H100 box | batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | H100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | H100 box | split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | H100 box | **CPU** reference (Xeon 8480+) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| int8 | **M5 Max** | **CPU** reference (macOS, ARM) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
-| fp16 | A100 box | batch 1 | `af3ffdc1592d` | `72a290237334` | ❌ |
-| fp16 | A100 box | batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ |
-| fp16 | A100 box | split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ |
-| fp16 | A100 box | **CPU** (EPYC 7J13) | `02880fd41404` | `72a290237334` | ❌ |
-| fp16 | H100 box | batch 1 | `88b7a5544ac5` | `72a290237334` | ❌ |
-| fp16 | H100 box | batch 8 — 7 random co-prompts | `b1a5a93c743d` | `72a290237334` | ❌ |
-| fp16 | H100 box | split prefill + token-by-token | `246e001ebbfd` | `72a290237334` | ❌ |
-| fp16 | H100 box | **CPU** (Xeon 8480+) | `22af55b4f422` | `72a290237334` | ❌ |
-| fp16 | **M5 Max** | **CPU** (macOS, ARM) | `54ed3db507f9` | `cfd92a5775a2` | ❌ |
+| model | machine | execution path | logits hash @512 | |
+|-------|---------|----------------|------------------|-|
+| int8 | A100 box | batch 1 (graphed) | `64430dd985f8` | ✅ |
+| int8 | A100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | ✅ |
+| int8 | A100 box | split prefill + token-by-token | `64430dd985f8` | ✅ |
+| int8 | A100 box | **CPU** reference (EPYC 7J13) | `64430dd985f8` | ✅ |
+| int8 | H100 box | batch 1 (graphed) | `64430dd985f8` | ✅ |
+| int8 | H100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | ✅ |
+| int8 | H100 box | split prefill + token-by-token | `64430dd985f8` | ✅ |
+| int8 | H100 box | **CPU** reference (Xeon 8480+) | `64430dd985f8` | ✅ |
+| int8 | **M5 Max** | **CPU** reference (macOS, ARM) | `64430dd985f8` | ✅ |
+| fp16 | A100 box | batch 1 | `af3ffdc1592d` | ❌ |
+| fp16 | A100 box | batch 8 — 7 random co-prompts | `12cf67ceecbb` | ❌ |
+| fp16 | A100 box | split prefill + token-by-token | `229b14ee3995` | ❌ |
+| fp16 | A100 box | **CPU** (EPYC 7J13) | `02880fd41404` | ❌ |
+| fp16 | H100 box | batch 1 | `88b7a5544ac5` | ❌ |
+| fp16 | H100 box | batch 8 — 7 random co-prompts | `b1a5a93c743d` | ❌ |
+| fp16 | H100 box | split prefill + token-by-token | `246e001ebbfd` | ❌ |
+| fp16 | H100 box | **CPU** (Xeon 8480+) | `22af55b4f422` | ❌ |
+| fp16 | **M5 Max** | **CPU** (macOS, ARM) | `54ed3db507f9` | ❌ |
 
 **Nine int8 runs, one logits hash. Nine fp16 runs, nine.**
 
@@ -139,23 +139,17 @@ different internal accumulation path, since CPUs don't natively execute
 fp16 math the way tensor cores do. Nine runs of identical mathematics, nine
 different answers.
 
-Worth savoring: eight of those nine float rows still agree on the *token*
-hash `72a290237334`, despite disagreeing on the logits from the very first
-step. Greedy decoding hid the divergence below the argmax for 512 straight
-steps, across a GPU generation and a CPU vendor change. The measured
-mechanism: batch composition perturbs this prompt's step-0 logits by up to
-**0.094**, while the top-1/top-2 margin happens to be **2.66** — a 28×
-cushion. Every generation is one near-tie away from two "identical"
-deployments quietly disagreeing, which is precisely what makes float
-nondeterminism so insidious — and what the int8 column proves is optional.
-
-The M5 Max is where the cushion runs out. Its fp16 **token** hash differs
-too (`cfd92a5775a2`): same weights, same prompt, same greedy decode, same
-dtype — genuinely different generated text. Available checkpoints bracket
-the divergence at ≤512 steps but don't pin it; the x86/NVIDIA boxes' token
-chain runs `63bbe0961bff` @64, `b247a935de33` @128, `9c838064116b` @256, so
-one more fp16 run on the Mac would place it in one of those windows. The
-28× margin was never a guarantee, only one machine's luck.
+Worth savoring: the demo also chain-hashes the token ids, and despite every
+float row disagreeing on the logits from step 0, eight of the nine still
+generate the **same 512 tokens** — greedy decoding hid the divergence below
+the argmax the whole way, across a GPU generation and a CPU vendor change.
+The measured mechanism: batch composition perturbs this prompt's step-0
+logits by up to **0.094**, while the top-1/top-2 margin happens to be
+**2.66** — a 28× cushion. The M5 Max is the ninth row, and it is where the
+cushion runs out: same weights, same prompt, same greedy decode, same
+dtype, genuinely different text. Every generation is one near-tie away from
+two "identical" deployments quietly disagreeing — which is what makes float
+nondeterminism so insidious, and what the int8 column proves is optional.
 
 The demo prints the exact hardware (GPU model, CPU model, torch version)
 and the artifact sha256 above its table, so results from different machines
