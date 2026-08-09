@@ -10,6 +10,49 @@ sequences and logits across runs, batch sizes and compositions, prefill vs.
 incremental decode, and hardware backends (A100 cuBLASLt int8 GEMM vs. CPU
 reference produce identical bits).
 
+## Why LLM inference is nondeterministic — and how integers fix it
+
+Ask a served LLM the same question twice at temperature 0 and you can get
+two different answers. The root cause is that **floating-point addition is
+not associative** — `(a + b) + c ≠ a + (b + c)` because each addition
+rounds — while high-performance kernels sum in whatever order maximizes
+throughput. That order changes with batch size and composition (your
+request's rows get tiled differently depending on who it shares a batch
+with), prefill vs. incremental decode (one big GEMM vs. many small ones),
+kernel selection (cuBLAS picks tile shapes by heuristic; split-K and
+atomics can differ run to run), and hardware or library version. So the
+"same" mathematical forward pass produces slightly different logits, and
+one flipped argmax early in a generation cascades into a visibly different
+completion. Framework "deterministic mode" flags only pin run-to-run order
+on one machine at one shape — they do nothing for batch invariance or
+cross-hardware reproducibility.
+
+The fashionable fix is to write **batch-invariant floating-point kernels**
+that pin a fixed reduction order everywhere. That works, but it treats the
+symptom: determinism holds only for those specific kernels on that
+platform, and bit-identical results across different hardware are still
+out of reach.
+
+This project removes the cause instead: **integer addition is exactly
+associative and commutative**, so every reduction — GEMM accumulation,
+softmax sums, norm sums — yields the same bits in *any* order, on *any*
+correct hardware. Once the entire forward pass is integer (this repo's
+contribution: including softmax, RMSNorm, SwiGLU, and RoPE, via I-LLM's
+dyadic-scale machinery), determinism is not an engineering discipline to
+maintain — it is a property of the arithmetic. That is what makes the
+strongest check here possible at all: an A100's tensor-core GEMMs and a
+CPU's plain integer matmuls produce **identical logits, bit for bit**.
+
+Integer-only inference itself is not new — I-LLM and its predecessors
+(I-BERT, I-ViT) target *efficiency* on integer-only edge hardware, and
+never examine determinism (batch invariance, prefill/decode invariance,
+and cross-device bit-exactness are not claims that appear in that
+literature). To our knowledge this is the first pipeline built and
+verified end-to-end for **unconditional determinism** — bit-identical
+logits across runs, batch compositions, prefill/decode splits, and CPU/GPU
+backends simultaneously — with the test suite treating every one of those
+as an exact, zero-tolerance acceptance criterion.
+
 Based on a simplification of I-LLM (arXiv:2405.17849) — dyadic-number scale
 arithmetic and shift-based integer non-linear operators — with analytic
 (training-free) smoothing. WikiText2 perplexity: **20.72 (int8) vs 20.95
