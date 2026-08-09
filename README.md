@@ -94,37 +94,29 @@ that same computation through radically different execution paths:
   (~7 min for its 512 exact integer forwards).
 
 All four print the **same hash**. The same variations applied to the fp16
-model (including a batch of 8 *identical copies* of the prompt) each
-diverge, and the demo prints the step at which they fork. Output from this
-repo's A100 box (hashes abbreviated):
+model each fork the logits immediately. Output from this repo's A100 box
+(512 generated tokens for every row; artifact `6658cea4dd89c613…`; hashes
+abbreviated):
 
-```
-artifact sha256: 6658cea4dd89c613…
+| model | execution path | logits hash @512 | tokens hash @512 | verdict | time |
+|-------|----------------|------------------|------------------|---------|------|
+| int8 | CUDA, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | baseline | 38 s |
+| int8 | CUDA, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 31 s |
+| int8 | CUDA, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 32 s |
+| int8 | **pure CPU** (independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 391 s |
+| fp16 | CUDA, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline | 20 s |
+| fp16 | CUDA, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** | 21 s |
+| fp16 | CUDA, batch 8 — 8 **copies of itself** | `22de70940d24` | `72a290237334` | ❌ logits fork **@ step 0** | 19 s |
+| fp16 | CUDA, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** | 20 s |
 
-config              @512 tokens/logits
-int8-cuda-b1        e28d5cc924e9 / 64430dd985f8   (38s)
-int8-cuda-b8        e28d5cc924e9 / 64430dd985f8   (31s)
-int8-cuda-split     e28d5cc924e9 / 64430dd985f8   (32s)
-int8-cpu-b1         e28d5cc924e9 / 64430dd985f8   (391s)
-fp16-cuda-b1        72a290237334 / af3ffdc1592d   (20s)
-fp16-cuda-b8dup     72a290237334 / 22de70940d24   (19s)
-fp16-cuda-split     72a290237334 / 229b14ee3995   (20s)
-
-int8: int8-cuda-b8    == int8-cuda-b1 for all 512 compared steps ✓
-int8: int8-cuda-split == int8-cuda-b1 for all 512 compared steps ✓
-int8: int8-cpu-b1     == int8-cuda-b1 for all 512 compared steps ✓
-fp16: fp16-cuda-b8dup vs fp16-cuda-b1 -> logits diverged at step 0
-fp16: fp16-cuda-split vs fp16-cuda-b1 -> logits diverged at step 0
-
-VERDICT: int8 pipeline bit-identical across every configuration
-```
-
-A detail worth savoring in the fp16 rows: the *token* hashes match even
-though the *logits* fork at step 0. Greedy decoding hid the divergence
-below the argmax for 512 straight steps — this time. That is precisely
-the failure mode that makes float nondeterminism so insidious: it is
-invisible until one near-tie flips, and then two "identical" deployments
-quietly disagree.
+A detail worth savoring in the fp16 rows: every variant forks the
+**logits at step 0**, yet all four *token* hashes match — greedy decoding
+hid the divergence below the argmax for 512 straight steps. The measured
+mechanism: batch composition perturbs this prompt's step-0 logits by up
+to **0.094**, while the top-1/top-2 margin happens to be **2.66** — a 28×
+cushion. Every generation is one near-tie away from two "identical"
+deployments quietly disagreeing, which is precisely what makes float
+nondeterminism so insidious — and what the int8 rows prove is optional.
 
 ```bash
 # full table (~35-40 min; the CPU row dominates)

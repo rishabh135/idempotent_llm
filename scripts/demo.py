@@ -189,6 +189,34 @@ def run_fp16(config: str, steps: int):
         return out.logits[:, -1], out.past_key_values
 
     with torch.no_grad():
+        if config.endswith("-b8"):
+            # the real batch test: 7 RANDOM co-prompts, LEFT-padded (HF
+            # convention), per-row greedy; hash row 0 (the sonnet)
+            seqs = [ids] + co_prompts(7)
+            B, T = len(seqs), max(len(x) for x in seqs)
+            bids = torch.zeros(B, T, dtype=torch.int64)
+            amask = torch.zeros(B, T, dtype=torch.int64)
+            for i, x in enumerate(seqs):
+                bids[i, T - len(x):] = x
+                amask[i, T - len(x):] = 1
+            pos_ids = (amask.cumsum(-1) - 1).clamp(min=0)
+            out = model(bids.to(dev), attention_mask=amask.to(dev),
+                        position_ids=pos_ids.to(dev), use_cache=True)
+            last, past = out.logits[:, -1], out.past_key_values
+            nextpos = (pos_ids[:, -1:] + 1).to(dev)
+            amask = amask.to(dev)
+            for _ in range(steps):
+                row = last[0]
+                tok_chain.update(int(torch.argmax(row)).to_bytes(8, "little"))
+                logit_chain.update(_bytes_f16(row))
+                nxt = torch.argmax(last, dim=-1, keepdim=True)  # per-row greedy
+                amask = torch.cat([amask, torch.ones(B, 1, dtype=amask.dtype,
+                                                     device=dev)], dim=1)
+                out = model(nxt, attention_mask=amask, position_ids=nextpos,
+                            past_key_values=past, use_cache=True)
+                last, past = out.logits[:, -1], out.past_key_values
+                nextpos = nextpos + 1
+            return tok_chain, logit_chain
         if config.endswith("b8dup"):
             # 8 COPIES of the SAME prompt — even this changes fp16 results
             last, past = prefill(ids.unsqueeze(0).repeat(8, 1))
@@ -216,7 +244,8 @@ def run_fp16(config: str, steps: int):
 # ---------------------------------------------------------------------------
 
 INT8_CONFIGS = ["int8-cuda-b1", "int8-cuda-b8", "int8-cuda-split", "int8-cpu-b1"]
-FP16_CONFIGS = ["fp16-cuda-b1", "fp16-cuda-b8dup", "fp16-cuda-split"]
+FP16_CONFIGS = ["fp16-cuda-b1", "fp16-cuda-b8", "fp16-cuda-b8dup",
+                "fp16-cuda-split"]
 
 
 def run_config(name: str, steps: int, artifact: str):
@@ -296,10 +325,12 @@ def main():
     if not args.skip_fp16:
         base_fp = results["fp16-cuda-b1"]
         for name in FP16_CONFIGS[1:]:
-            div = first_divergence(base_fp[1], results[name][1])
-            where = f"logits diverged at step {div}" if div is not None \
-                else "identical (fp16 got lucky this time)"
-            print(f"fp16: {name} vs fp16-cuda-b1 -> {where}")
+            ldiv = first_divergence(base_fp[1], results[name][1])
+            tdiv = first_divergence(base_fp[0], results[name][0])
+            lw = f"logits diverged @ step {ldiv}" if ldiv is not None else "logits identical"
+            tw = f"TOKENS diverged @ step {tdiv}" if tdiv is not None \
+                else "tokens survived (argmax hid it)"
+            print(f"fp16: {name} vs fp16-cuda-b1 -> {lw}; {tw}")
     print("\nVERDICT:", "int8 pipeline bit-identical across every configuration"
           if ok else "INT8 DIVERGENCE — this is a bug, report it")
     sys.exit(0 if ok else 1)
