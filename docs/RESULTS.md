@@ -84,10 +84,11 @@ Checks run via `tests/test_determinism.py` (fast set) and `-m slow` (4k long-con
 Fast set: `9 passed in 1562s` (the cross-device check runs 600 full CPU
 reference forwards — slow by design, exact by construction).
 
-Re-run on the H100 / Xeon box: the whole non-slow suite is `78 passed,
-1 deselected in 506s` (`make test`), determinism checks included. Note the
-fast set is 11 tests there, not the 9 recorded above — `test_determinism.py`
-gained two since that line was written.
+Re-run on the H100 / Xeon box: `make test-all` is **`79 passed in 507s`** —
+the entire suite, including check 5's slow 4k long-context test
+(`TestLongContext::test_4k_prompt`). Note the fast determinism set is 11
+tests there, not the 9 recorded above; `test_determinism.py` gained two
+since that line was written.
 
 ## §10 Performance
 
@@ -140,10 +141,9 @@ columns, not the multiplier. The absolute numbers split by regime:
   investigated further; flagged so the A100 numbers above are not read as a
   floor.
 
-None of this affects any determinism claim — the §9.3 fast checks (1–4 plus
-the float-leak guard; the 4k long-context check is `-m slow` and was
-deselected) and the demo's four int8 configurations are all bit-exact on
-this box (see the README's H100 table).
+None of this affects any determinism claim — all five §9.3 checks, the
+§9.4 float-leak guard, and the demo's four int8 configurations are bit-exact
+on this box (the H100 rows of the README's demo table).
 
 Two structural changes made layer-level compilation affordable (it was
 30–60 min of codegen before; 55 s after):
