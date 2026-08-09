@@ -115,7 +115,9 @@ Running the int8 configs on *any* other correct hardware — an H100, a
 different CPU, an Apple-silicon Mac via the reference backend — must
 reproduce the hashes above exactly, given the same artifact. The fp16
 hashes carry no such promise on different hardware (that is the point).
-The Apple-silicon half of that claim is [run and checked below](#third-architecture-apple-silicon-verified).
+Every one of those has now been run and checked below —
+[Apple silicon](#third-architecture-apple-silicon-verified), and
+[an H100 with a different CPU](#second-nvidia-generation-h100-and-intel-xeon-verified).
 
 Row for row, the two halves mirror each other: same prompt, same 512
 steps, same four execution variations — batch 1, batched with random
@@ -161,15 +163,69 @@ architecture boundary and the cushion is gone: the fp16 **token** hash
 changes too (`cfd92a5775a2` vs `72a290237334` on the A100 box). Same
 weights, same prompt, same greedy decode, same dtype — genuinely different
 generated text. Available checkpoints bracket the divergence at ≤512 steps
-but do not pin the step: fixing that needs the A100 box's per-step chain at
-@64/@128/@256, which this repo does not record. The 28× margin was never a
-guarantee, only one machine's luck.
+but do not pin the step: narrowing it needs an x86/NVIDIA box's token chain
+at @64/@128/@256, which the [H100 run
+below](#second-nvidia-generation-h100-and-intel-xeon-verified) now records
+— so one more fp16 run on the M5 Max would place the divergence in one of
+those windows. The 28× margin was never a guarantee, only one machine's
+luck.
 
 Incidentally, the two timings inform the performance story from the other
 direction: on Apple silicon the exact-integer path (87 s) beats the fp16
 baseline (125 s), having been **4.5× faster than the same integer path on
 the EPYC** (391 s). fp16 goes the other way — 125 s here vs 35 s on the
 EPYC — because CPUs have no native fp16 math to fall back on.
+
+### Second NVIDIA generation: H100 and Intel Xeon (verified)
+
+Same artifact (`6658cea4dd89c613…`), same prompt, same 512 steps, on a
+Lambda Labs H100 box — Hopper tensor cores instead of Ampere, and an Intel
+Xeon Platinum 8480+ instead of the EPYC 7J13, so *both* halves of the
+machine differ from the box at the top. Full table, torch 2.13.0+cu130:
+
+| model | execution path | logits hash @512 | tokens hash @512 | verdict | time |
+|-------|----------------|------------------|------------------|---------|------|
+| int8 | H100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to the A100 box **and** the M5 Max | 62 s |
+| int8 | H100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 75 s |
+| int8 | H100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 47 s |
+| int8 | **CPU** (Xeon Platinum 8480+, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 348 s |
+| fp16 | H100, batch 1 | `88b7a5544ac5` | `72a290237334` | ❌ logits differ from the A100 box's fp16 **baseline** | 36 s |
+| fp16 | H100, batch 8 — 7 random co-prompts | `b1a5a93c743d` | `72a290237334` | ❌ logits fork **@ step 0** | 37 s |
+| fp16 | H100, split prefill + token-by-token | `246e001ebbfd` | `72a290237334` | ❌ logits fork **@ step 0** | 14 s |
+| fp16 | **CPU** (Xeon Platinum 8480+) | `22af55b4f422` | `72a290237334` | ❌ logits fork **@ step 0** | 16 s |
+
+Four more execution paths, the same hash. The int8 claim now stands on
+**five distinct pieces of silicon** — NVIDIA Ampere, NVIDIA Hopper, an AMD
+EPYC, an Intel Xeon, and an Apple M5 Max — four vendors and three
+instruction sets.
+
+The fp16 half moves in the opposite direction, as it should: **every one of
+these four float logits hashes is new**, differing from the corresponding
+A100-box row — the baseline included. Nothing about the math changed;
+Hopper simply picks different kernels than Ampere, and the Xeon accumulates
+differently than the EPYC. That is four more values in a list that grows
+once per machine, next to an int8 column that has not moved.
+
+Yet all four fp16 **token** hashes still read `72a290237334` — the A100
+box's value. Greedy decoding again hid every logit fork, this time across a
+GPU generation *and* a CPU vendor change. The 28× top-1/top-2 cushion
+survives here; the Mac is still the only machine where it ran out.
+
+That also recovers the checkpoint ladder the section above wanted. Because
+the token hash is a running chain, matching at @512 means all 512 tokens
+matched — so this box's `@64` / `@128` / `@256` fp16 token hashes
+(`63bbe0961bff`, `b247a935de33`, `9c838064116b`) are the A100 box's too.
+One more fp16 run on the M5 Max would now bracket its token divergence to
+one of those windows.
+
+Timing caveat: the two CPU rows are directly comparable to the A100 box
+(the Xeon beats the EPYC — 348 s vs 391 s int8, 16 s vs 35 s fp16), but the
+CUDA rows are not. Each first-of-its-kind config here paid a cold
+inductor-cache and CUDA-graph warmup that the later rows reuse, which is
+why `int8-cuda-b1` (62 s) reads slower than `int8-cuda-split` (47 s) on the
+same box. For clean throughput numbers use `scripts/bench.py`, not the
+demo — the full grid for this box, plus its WikiText2 perplexity, is in
+[docs/RESULTS.md](docs/RESULTS.md).
 
 ```bash
 # full table (~35-40 min; the CPU row dominates)
