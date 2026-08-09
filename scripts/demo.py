@@ -98,13 +98,6 @@ def co_prompts(n: int):
 # int8 configs
 # ---------------------------------------------------------------------------
 
-def _hash_int8_steps(step_logits_row0, tok_chain, logit_chain):
-    for lg in step_logits_row0:
-        logit_chain.update(_bytes_i32(lg))
-        # greedy token from these logits is recomputed by the caller's model;
-        # token chain fed separately
-
-
 def run_int8(config: str, steps: int, artifact: str):
     from detllm.model import IntQwen3
     backend = "cpu" if "cpu" in config else "cuda"
@@ -304,9 +297,11 @@ def main():
         steps = args.steps
         tc, lc, dt = run_config(args.config, steps, args.artifact)
         print(f"{args.config}  ({steps} tokens, {dt:.0f}s)")
-        for n in CHECKPOINTS:
-            if n in lc.at:
-                print(f"  @{n:<4} tokens {tc.at[n]}   logits {lc.at[n]}")
+        # every checkpoint reached, plus the implicit final one — so a
+        # non-default --steps still prints (matches the table path below,
+        # which also derives its columns from the recorded checkpoints)
+        for n in sorted(lc.at):
+            print(f"  @{n:<4} tokens {tc.at[n]}   logits {lc.at[n]}")
         return
 
     results = {}
