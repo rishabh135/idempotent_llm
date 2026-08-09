@@ -6,12 +6,12 @@ in x/rms(x) entirely and the core is scale-free:
 
     y ≈ x / sqrt(mean(x²))       (integer, via I-SQRT = intmath.isqrt)
 
-γ handling (see NOTES.md): hidden-dim norms have γ folded into the following
+γ handling (see docs/NOTES.md): hidden-dim norms have γ folded into the following
 linear's weights offline, so `di_rmsnorm` returns the bare normalized value
 with fixed scale (1, OUT_FRAC_BITS). The QK-Norm variant
 (`di_rmsnorm_gamma`) multiplies a per-channel dyadic γ into the data at
 runtime — the row scale stays uniform because the *data* absorbs γ.
-eps is dropped (rms clamped ≥ 1); see NOTES.md §7.
+eps is dropped (rms clamped ≥ 1); see docs/NOTES.md §7.
 
 Overflow discipline: rows are pre-shifted so max|x'| has MSB ≤ bit 25, hence
 Σx'² ≤ n·2^52 ≤ 2^62 for n ≤ 1024. Up-shifts are exact; down-shifts round.

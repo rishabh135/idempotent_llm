@@ -1,5 +1,5 @@
 """DI-SwiGLU — paper Algorithm 3, without FSBR smoothing (α_smooth ≡ 1),
-with one deliberate fix (see NOTES.md): the sigmoid is computed with the
+with one deliberate fix (see docs/NOTES.md): the sigmoid is computed with the
 numerically-stable two-branch form instead of the paper's shared row-max
 frame.
 

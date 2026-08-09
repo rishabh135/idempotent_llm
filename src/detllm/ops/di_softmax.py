@@ -10,7 +10,7 @@ dyadic scale m=1, k=7 (value = p / 2^7), per the algorithm's convention
 
 Default clip c = None (∞): DI-Exp on full-precision scores underflows to 0
 below ≈ -21 by itself, which is strictly more accurate than clipping (see
-NOTES.md §4). c, when given for ablation, is applied per Eq. 10 as an
+docs/NOTES.md §4). c, when given for ablation, is applied per Eq. 10 as an
 integer clamp at -round(c · 2^k / m) in raw score units.
 """
 
