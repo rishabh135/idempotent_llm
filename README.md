@@ -167,7 +167,7 @@ printing the same hash is the three-architecture version of the claim.
 uv sync
 make prepare    # one-time: build artifacts/qwen3-0.6b-int8 (needs GPU + HF)
 make test       # unit + golden + fast determinism checks
-make test-all   # + 8k-context checks
+make test-all   # + 4k-long-context checks
 make ppl        # full WikiText2 perplexity
 ```
 

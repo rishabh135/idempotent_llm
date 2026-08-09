@@ -101,6 +101,17 @@ Purely a memory-safety fix; zero effect on computed values.
    smoothing (α = 0.3) and SmoothQuant-style activation smoothing (α = 0.5)
    on attn-in / mlp-in / down-in / o-in. Both are closed-form calibration
    folds; the §9.2 ablation shows they are required for the accuracy bar.
+10. **The §9.3 long-context check runs at 4k tokens, not the spec's 8k**
+   (deliberate scope cut, approved during development). 4k exercises every
+   code path that 8k would — the >2048 query-chunked attention path, chunk
+   boundaries, and long RoPE positions — while 8k added only memory
+   pressure (the int64 softmax temporaries OOM'd a 40GB A100 alongside
+   concurrent work) and wall time. Long-position RoPE precision at 30k+ is
+   separately covered by the operator test
+   (tests/test_ops.py::TestIntRope::test_long_position_no_degradation).
+   Note per-token/per-slot arithmetic makes context length a non-factor
+   for determinism by construction; the 4k run verifies the claim, the
+   construction carries it to 32k.
 
 ## Accuracy findings (5-segment WikiText2 PPL attribution; fp16 = 22.42)
 

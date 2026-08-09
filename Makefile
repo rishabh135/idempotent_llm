@@ -3,7 +3,7 @@
 # make test     — everything except full perplexity (unit + golden +
 #                 determinism fast checks); any numerics change must
 #                 re-freeze golden bounds deliberately.
-# make test-all — includes the slow 8k-context determinism checks.
+# make test-all — includes the slow 4k-long-context determinism checks.
 # make ppl      — full WikiText2 perplexity, int8 CUDA + fp16 baseline.
 # make prepare  — rebuild the artifact from the HF checkpoint.
 
