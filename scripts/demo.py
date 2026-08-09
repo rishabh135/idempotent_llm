@@ -287,9 +287,15 @@ def main():
             if line.startswith("model name"):
                 cpu = line.split(":", 1)[1].strip()
                 break
-    except OSError:
+    except OSError:  # no /proc — macOS/BSD
         import platform
-        cpu = platform.processor() or platform.machine()
+        import subprocess
+        try:
+            cpu = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                 capture_output=True, text=True,
+                                 check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            cpu = platform.processor() or platform.machine()
     print(f"artifact sha256: {art_sha[:16]}…  (runs are only comparable "
           f"across machines when this matches)")
     print(f"hardware: GPU={gpu} | CPU={cpu} | torch {torch.__version__}\n")

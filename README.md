@@ -115,6 +115,7 @@ Running the int8 configs on *any* other correct hardware — an H100, a
 different CPU, an Apple-silicon Mac via the reference backend — must
 reproduce the hashes above exactly, given the same artifact. The fp16
 hashes carry no such promise on different hardware (that is the point).
+The Apple-silicon half of that claim is [run and checked below](#third-architecture-apple-silicon-verified).
 
 Row for row, the two halves mirror each other: same prompt, same 512
 steps, same four execution variations — batch 1, batched with random
@@ -132,7 +133,43 @@ composition perturbs this prompt's step-0 logits by up to **0.094**, while
 the top-1/top-2 margin happens to be **2.66** — a 28× cushion. Every
 generation is one near-tie away from two "identical" deployments quietly
 disagreeing, which is precisely what makes float nondeterminism so
-insidious — and what the int8 rows prove is optional.
+insidious — and what the int8 rows prove is optional. That cushion holds
+*on this box*; the Mac below is where it runs out.
+
+### Third architecture: Apple silicon (verified)
+
+The cross-machine claim above, actually run. Same artifact
+(`6658cea4dd89c613…`, the sha the demo prints on startup), same prompt,
+same 512 steps — on an Apple M5 Max: ARM instead of x86, no CUDA, no
+cuBLASLt, no Triton, a different vendor's silicon and a different BLAS.
+
+| model | execution path | logits hash @512 | tokens hash @512 | verdict | time |
+|-------|----------------|------------------|------------------|---------|------|
+| int8 | **Apple M5 Max** (macOS, reference backend) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to **all four** A100-box int8 rows | 87 s |
+| fp16 | **Apple M5 Max** (macOS, CPU) | `54ed3db507f9` | `cfd92a5775a2` | ❌ logits **and tokens** differ from every A100-box float row | 125 s |
+
+The int8 row is the thesis at full strength: **NVIDIA tensor cores, an x86
+EPYC 7J13, and an Apple M5 Max — three vendors, three instruction sets,
+three independent GEMM implementations — emit the same 512-step logits
+hash, bit for bit.** Nothing was tuned per-platform to make that happen;
+the arithmetic simply has no freedom left to disagree.
+
+The fp16 row is the warning the previous section set up, arriving on
+schedule. On the A100 box every float variation forked the logits while
+greedy decoding hid it — all six token hashes matched. Cross the
+architecture boundary and the cushion is gone: the fp16 **token** hash
+changes too (`cfd92a5775a2` vs `72a290237334` on the A100 box). Same
+weights, same prompt, same greedy decode, same dtype — genuinely different
+generated text. Available checkpoints bracket the divergence at ≤512 steps
+but do not pin the step: fixing that needs the A100 box's per-step chain at
+@64/@128/@256, which this repo does not record. The 28× margin was never a
+guarantee, only one machine's luck.
+
+Incidentally, the two timings inform the performance story from the other
+direction: on Apple silicon the exact-integer path (87 s) beats the fp16
+baseline (125 s), having been **4.5× faster than the same integer path on
+the EPYC** (391 s). fp16 goes the other way — 125 s here vs 35 s on the
+EPYC — because CPUs have no native fp16 math to fall back on.
 
 ```bash
 # full table (~35-40 min; the CPU row dominates)
@@ -159,7 +196,9 @@ The demo prints `sha256(model.safetensors)` on startup (this artifact:
 `6658cea4dd89c613…`); two machines are only comparable when it matches.
 On Apple silicon, run the `int8-cpu-b1` config (the reference backend is
 the Apple path per the spec) — x86 CPU, ARM CPU, and NVIDIA tensor cores
-printing the same hash is the three-architecture version of the claim.
+printing the same hash is the three-architecture version of the claim, and
+it is [confirmed above](#third-architecture-apple-silicon-verified) on an
+M5 Max.
 
 ## Usage
 
