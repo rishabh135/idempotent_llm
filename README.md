@@ -77,7 +77,7 @@ tests/          unit + golden + §9.3 determinism suite
 scripts/        perplexity eval, ablations, benchmarks, diagnostics
 ```
 
-## Demo: one prompt, seven execution paths, one hash
+## Demo: one prompt, three machines, one hash
 
 `scripts/demo.py` is the whole thesis in one table. It takes the first 64
 tokens of Sonnet 18, greedy-generates 512 tokens, and chain-hashes the raw
@@ -93,129 +93,80 @@ that same computation through radically different execution paths:
   completely independent implementation of the same integer semantics
   (512 exact integer forwards — by far the slowest row to run).
 
-All four print the **same hash**. The same variations applied to the fp16
-model each fork the logits immediately. Output from this repo's A100 box
-(512 generated tokens for every row; artifact `6658cea4dd89c613…`; hashes
-abbreviated):
+Those variations are then run on three machines that share no silicon: an
+**A100 box** (Ampere tensor cores + an AMD EPYC 7J13), an **H100 box**
+(Hopper + an Intel Xeon Platinum 8480+), and an **Apple M5 Max** (ARM,
+macOS). The two NVIDIA boxes run all four; the Mac has no CUDA, so it runs
+the reference path only. Same artifact `6658cea4dd89c613…` for every row,
+512 generated tokens for every row, hashes abbreviated:
 
-| model | execution path | logits hash @512 | tokens hash @512 | verdict |
-|-------|----------------|------------------|------------------|---------|
-| int8 | A100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | baseline |
-| int8 | A100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
-| int8 | A100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
-| int8 | **CPU** (EPYC 7J13, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
-| fp16 | A100, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline |
-| fp16 | A100, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** |
-| fp16 | A100, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** |
-| fp16 | **CPU** (EPYC 7J13) | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** |
+| model | machine | execution path | logits hash @512 | tokens hash @512 | |
+|-------|---------|----------------|------------------|------------------|-|
+| int8 | A100 box | batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | A100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | A100 box | split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | A100 box | **CPU** reference (EPYC 7J13) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | H100 box | batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | H100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | H100 box | split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | H100 box | **CPU** reference (Xeon 8480+) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| int8 | **M5 Max** | **CPU** reference (macOS, ARM) | `64430dd985f8` | `e28d5cc924e9` | ✅ |
+| fp16 | A100 box | batch 1 | `af3ffdc1592d` | `72a290237334` | ❌ |
+| fp16 | A100 box | batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ |
+| fp16 | A100 box | split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ |
+| fp16 | A100 box | **CPU** (EPYC 7J13) | `02880fd41404` | `72a290237334` | ❌ |
+| fp16 | H100 box | batch 1 | `88b7a5544ac5` | `72a290237334` | ❌ |
+| fp16 | H100 box | batch 8 — 7 random co-prompts | `b1a5a93c743d` | `72a290237334` | ❌ |
+| fp16 | H100 box | split prefill + token-by-token | `246e001ebbfd` | `72a290237334` | ❌ |
+| fp16 | H100 box | **CPU** (Xeon 8480+) | `22af55b4f422` | `72a290237334` | ❌ |
+| fp16 | **M5 Max** | **CPU** (macOS, ARM) | `54ed3db507f9` | `cfd92a5775a2` | ❌ |
+
+**Nine int8 runs, one logits hash. Nine fp16 runs, nine.**
+
+The int8 column is the thesis at full strength: **NVIDIA Ampere, NVIDIA
+Hopper, an AMD EPYC, an Intel Xeon, and an Apple M5 Max — four vendors and
+three instruction sets — emit the same 512-step logits hash, bit for
+bit.** Three of those rows come from a completely independent implementation
+of the same integer semantics: the reference backend shares no kernel with
+the CUDA one — no cuBLASLt, no Triton, no CUDA graphs. Nothing was tuned
+per-platform to make it happen; the arithmetic simply has no freedom left
+to disagree.
+
+Every fp16 row forks instead, and forks **at step 0** — different reduction
+orders in different kernels, chosen by batch shape, by prefill-vs-decode
+split, by GPU generation, and by vendor. The CPU rows additionally use a
+different internal accumulation path, since CPUs don't natively execute
+fp16 math the way tensor cores do. Nine runs of identical mathematics, nine
+different answers.
+
+Worth savoring: eight of those nine float rows still agree on the *token*
+hash `72a290237334`, despite disagreeing on the logits from the very first
+step. Greedy decoding hid the divergence below the argmax for 512 straight
+steps, across a GPU generation and a CPU vendor change. The measured
+mechanism: batch composition perturbs this prompt's step-0 logits by up to
+**0.094**, while the top-1/top-2 margin happens to be **2.66** — a 28×
+cushion. Every generation is one near-tie away from two "identical"
+deployments quietly disagreeing, which is precisely what makes float
+nondeterminism so insidious — and what the int8 column proves is optional.
+
+The M5 Max is where the cushion runs out. Its fp16 **token** hash differs
+too (`cfd92a5775a2`): same weights, same prompt, same greedy decode, same
+dtype — genuinely different generated text. Available checkpoints bracket
+the divergence at ≤512 steps but don't pin it; the x86/NVIDIA boxes' token
+chain runs `63bbe0961bff` @64, `b247a935de33` @128, `9c838064116b` @256, so
+one more fp16 run on the Mac would place it in one of those windows. The
+28× margin was never a guarantee, only one machine's luck.
 
 The demo prints the exact hardware (GPU model, CPU model, torch version)
-above its table, so results from different machines are self-documenting.
-Running the int8 configs on *any* other correct hardware — an H100, a
-different CPU, an Apple-silicon Mac via the reference backend — must
-reproduce the hashes above exactly, given the same artifact. The fp16
-hashes carry no such promise on different hardware (that is the point).
-Every one of those has now been run and checked below —
-[Apple silicon](#third-architecture-apple-silicon-verified), and
-[an H100 with a different CPU](#second-nvidia-generation-h100-and-intel-xeon-verified).
-
-Row for row, the two halves mirror each other: same prompt, same 512
-steps, same four execution variations — batch 1, batched with random
-co-prompts, split prefill/decode, and CPU. Every fp16 variation forks the
-logits at step 0 (different reduction orders in different kernels; the
-CPU additionally uses a different internal accumulation path, since CPUs
-don't natively execute fp16 math the way tensor cores do). Every int8
-variation — including the pure-CPU implementation with no cuBLASLt, no
-Triton, and no CUDA graphs — produces one identical hash.
-
-Also worth savoring: every float row forks its **logits at step 0**, yet
-all six float *token* hashes match — greedy decoding hid the divergence
-below the argmax for 512 straight steps. The measured mechanism: batch
-composition perturbs this prompt's step-0 logits by up to **0.094**, while
-the top-1/top-2 margin happens to be **2.66** — a 28× cushion. Every
-generation is one near-tie away from two "identical" deployments quietly
-disagreeing, which is precisely what makes float nondeterminism so
-insidious — and what the int8 rows prove is optional. That cushion holds
-*on this box*; the Mac below is where it runs out.
-
-### Third architecture: Apple silicon (verified)
-
-The cross-machine claim above, actually run. Same artifact
-(`6658cea4dd89c613…`, the sha the demo prints on startup), same prompt,
-same 512 steps — on an Apple M5 Max: ARM instead of x86, no CUDA, no
-cuBLASLt, no Triton, a different vendor's silicon and a different BLAS.
-
-| model | execution path | logits hash @512 | tokens hash @512 | verdict |
-|-------|----------------|------------------|------------------|---------|
-| int8 | **Apple M5 Max** (macOS, reference backend) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to **all four** A100-box int8 rows |
-| fp16 | **Apple M5 Max** (macOS, CPU) | `54ed3db507f9` | `cfd92a5775a2` | ❌ logits **and tokens** differ from every A100-box float row |
-
-The int8 row is the thesis at full strength: **NVIDIA tensor cores, an x86
-EPYC 7J13, and an Apple M5 Max — three vendors, three instruction sets,
-three independent GEMM implementations — emit the same 512-step logits
-hash, bit for bit.** Nothing was tuned per-platform to make that happen;
-the arithmetic simply has no freedom left to disagree.
-
-The fp16 row is the warning the previous section set up, arriving on
-schedule. On the A100 box every float variation forked the logits while
-greedy decoding hid it — all six token hashes matched. Cross the
-architecture boundary and the cushion is gone: the fp16 **token** hash
-changes too (`cfd92a5775a2` vs `72a290237334` on the A100 box). Same
-weights, same prompt, same greedy decode, same dtype — genuinely different
-generated text. Available checkpoints bracket the divergence at ≤512 steps
-but do not pin the step: narrowing it needs an x86/NVIDIA box's token chain
-at @64/@128/@256, which the [H100 run
-below](#second-nvidia-generation-h100-and-intel-xeon-verified) now records
-— so one more fp16 run on the M5 Max would place the divergence in one of
-those windows. The 28× margin was never a guarantee, only one machine's
-luck.
-
-### Second NVIDIA generation: H100 and Intel Xeon (verified)
-
-Same artifact (`6658cea4dd89c613…`), same prompt, same 512 steps, on a
-Lambda Labs H100 box — Hopper tensor cores instead of Ampere, and an Intel
-Xeon Platinum 8480+ instead of the EPYC 7J13, so *both* halves of the
-machine differ from the box at the top. Full table, torch 2.13.0+cu130:
-
-| model | execution path | logits hash @512 | tokens hash @512 | verdict |
-|-------|----------------|------------------|------------------|---------|
-| int8 | H100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to the A100 box **and** the M5 Max |
-| int8 | H100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
-| int8 | H100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
-| int8 | **CPU** (Xeon Platinum 8480+, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
-| fp16 | H100, batch 1 | `88b7a5544ac5` | `72a290237334` | ❌ logits differ from the A100 box's fp16 **baseline** |
-| fp16 | H100, batch 8 — 7 random co-prompts | `b1a5a93c743d` | `72a290237334` | ❌ logits fork **@ step 0** |
-| fp16 | H100, split prefill + token-by-token | `246e001ebbfd` | `72a290237334` | ❌ logits fork **@ step 0** |
-| fp16 | **CPU** (Xeon Platinum 8480+) | `22af55b4f422` | `72a290237334` | ❌ logits fork **@ step 0** |
-
-Four more execution paths, the same hash. The int8 claim now stands on
-**five distinct pieces of silicon** — NVIDIA Ampere, NVIDIA Hopper, an AMD
-EPYC, an Intel Xeon, and an Apple M5 Max — four vendors and three
-instruction sets.
-
-The fp16 half moves in the opposite direction, as it should: **every one of
-these four float logits hashes is new**, differing from the corresponding
-A100-box row — the baseline included. Nothing about the math changed;
-Hopper simply picks different kernels than Ampere, and the Xeon accumulates
-differently than the EPYC. That is four more values in a list that grows
-once per machine, next to an int8 column that has not moved.
-
-Yet all four fp16 **token** hashes still read `72a290237334` — the A100
-box's value. Greedy decoding again hid every logit fork, this time across a
-GPU generation *and* a CPU vendor change. The 28× top-1/top-2 cushion
-survives here; the Mac is still the only machine where it ran out.
-
-That also recovers the checkpoint ladder the section above wanted. Because
-the token hash is a running chain, matching at @512 means all 512 tokens
-matched — so this box's `@64` / `@128` / `@256` fp16 token hashes
-(`63bbe0961bff`, `b247a935de33`, `9c838064116b`) are the A100 box's too.
-One more fp16 run on the M5 Max would now bracket its token divergence to
-one of those windows.
+and the artifact sha256 above its table, so results from different machines
+are self-documenting and provably comparable. Running the int8 configs on
+*any* other correct hardware must reproduce these hashes exactly, given the
+same artifact; the fp16 hashes carry no such promise (that is the point).
 
 Throughput is measured separately with `scripts/bench.py` — the demo is a
 correctness harness, and its wall-clock is dominated by one-time setup
-rather than decode. This box's decode/prefill grid, plus its WikiText2
-perplexity, is in [docs/RESULTS.md](docs/RESULTS.md).
+rather than decode. Decode/prefill grids for the A100 and H100 boxes, plus
+WikiText2 perplexity, are in [docs/RESULTS.md](docs/RESULTS.md).
 
 ```bash
 # full table (~35-40 min; the CPU row dominates)
@@ -240,11 +191,8 @@ hf download nathanbarry/detllm-qwen3-0.6b-int8 --local-dir artifacts/qwen3-0.6b-
 
 The demo prints `sha256(model.safetensors)` on startup (this artifact:
 `6658cea4dd89c613…`); two machines are only comparable when it matches.
-On Apple silicon, run the `int8-cpu-b1` config (the reference backend is
-the Apple path per the spec) — x86 CPU, ARM CPU, and NVIDIA tensor cores
-printing the same hash is the three-architecture version of the claim, and
-it is [confirmed above](#third-architecture-apple-silicon-verified) on an
-M5 Max.
+On Apple silicon, run the `int8-cpu-b1` config — the reference backend is
+the Apple path per the spec, and it is the M5 Max row in the table above.
 
 ## Usage
 
