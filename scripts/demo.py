@@ -245,7 +245,7 @@ def run_fp16(config: str, steps: int):
 
 INT8_CONFIGS = ["int8-cuda-b1", "int8-cuda-b8", "int8-cuda-split", "int8-cpu-b1"]
 FLOAT_CONFIGS = ["fp16-cuda-b1", "fp16-cuda-b8", "fp16-cuda-split",
-                 "fp32-cuda-b1", "fp32-cpu-b1"]
+                 "fp16-cpu-b1", "fp32-cuda-b1", "fp32-cpu-b1"]
 
 
 def run_config(name: str, steps: int, artifact: str):
@@ -325,6 +325,7 @@ def main():
     if not args.skip_fp16:
         pairs = [("fp16-cuda-b8", "fp16-cuda-b1"),
                  ("fp16-cuda-split", "fp16-cuda-b1"),
+                 ("fp16-cpu-b1", "fp16-cuda-b1"),   # matched dtype, hw only
                  ("fp32-cpu-b1", "fp32-cuda-b1")]  # matched dtype, hw only
         for name, base in pairs:
             ldiv = first_divergence(results[base][1], results[name][1])

@@ -107,14 +107,18 @@ abbreviated):
 | fp16 | CUDA, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline | 20 s |
 | fp16 | CUDA, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** | 21 s |
 | fp16 | CUDA, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** | 20 s |
-| fp32 | CUDA, batch 1 | `c9f8eeb64b0d` | `72a290237334` | baseline for the CPU row | 25 s |
+| fp16 | **pure CPU** — *same dtype as fp16 baseline* | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** | 35 s |
+| fp32 | CUDA, batch 1 | `c9f8eeb64b0d` | `72a290237334` | baseline for the fp32 CPU row | 25 s |
 | fp32 | **pure CPU** — *same dtype as the row above* | `86cbf54fdd32` | `72a290237334` | ❌ logits fork **@ step 0** | 84 s |
 
-The last two rows are the apples-to-apples mirror of int8's CPU row: at
-**identical fp32 precision**, merely moving from CUDA to CPU forks the
-logits at step 0 (different BLAS, different reduction orders) — while the
-int8 pipeline's CPU run, a far more different implementation (no cuBLASLt,
-no Triton, no CUDA graphs), matches its GPU run bit for bit.
+The CPU rows are the apples-to-apples mirror of int8's CPU row: at
+**matched precision** (fp16-vs-fp16 and fp32-vs-fp32), merely moving from
+CUDA to CPU forks the logits at step 0 — different BLAS, different
+reduction orders, and for fp16-on-CPU a different internal accumulation
+path, because CPUs don't natively execute fp16 math the way tensor cores
+do. The int8 pipeline's CPU run, a far *more* different implementation
+(no cuBLASLt, no Triton, no CUDA graphs), matches its GPU run bit for
+bit.
 
 Also worth savoring: every float row forks its **logits at step 0**, yet
 all six float *token* hashes match — greedy decoding hid the divergence
