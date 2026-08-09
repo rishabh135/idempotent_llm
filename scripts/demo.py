@@ -280,8 +280,19 @@ def main():
     import hashlib as _h
     with open(f"{args.artifact}/model.safetensors", "rb") as f:
         art_sha = _h.sha256(f.read()).hexdigest()
+    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none"
+    cpu = "unknown"
+    try:
+        for line in open("/proc/cpuinfo"):
+            if line.startswith("model name"):
+                cpu = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        import platform
+        cpu = platform.processor() or platform.machine()
     print(f"artifact sha256: {art_sha[:16]}…  (runs are only comparable "
-          f"across machines when this matches)\n")
+          f"across machines when this matches)")
+    print(f"hardware: GPU={gpu} | CPU={cpu} | torch {torch.__version__}\n")
 
     if args.config:
         steps = args.steps

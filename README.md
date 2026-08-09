@@ -100,14 +100,21 @@ abbreviated):
 
 | model | execution path | logits hash @512 | tokens hash @512 | verdict | time |
 |-------|----------------|------------------|------------------|---------|------|
-| int8 | CUDA, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | baseline | 38 s |
-| int8 | CUDA, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 31 s |
-| int8 | CUDA, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 32 s |
-| int8 | **pure CPU** (independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 391 s |
-| fp16 | CUDA, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline | 20 s |
-| fp16 | CUDA, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** | 21 s |
-| fp16 | CUDA, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** | 20 s |
-| fp16 | **pure CPU** | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** | 35 s |
+| int8 | A100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | baseline | 38 s |
+| int8 | A100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 31 s |
+| int8 | A100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 32 s |
+| int8 | **CPU** (EPYC 7J13, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 391 s |
+| fp16 | A100, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline | 20 s |
+| fp16 | A100, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** | 21 s |
+| fp16 | A100, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** | 20 s |
+| fp16 | **CPU** (EPYC 7J13) | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** | 35 s |
+
+The demo prints the exact hardware (GPU model, CPU model, torch version)
+above its table, so results from different machines are self-documenting.
+Running the int8 configs on *any* other correct hardware — an H100, a
+different CPU, an Apple-silicon Mac via the reference backend — must
+reproduce the hashes above exactly, given the same artifact. The fp16
+hashes carry no such promise on different hardware (that is the point).
 
 Row for row, the two halves mirror each other: same prompt, same 512
 steps, same four execution variations — batch 1, batched with random
