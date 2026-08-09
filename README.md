@@ -91,23 +91,23 @@ that same computation through radically different execution paths:
   one-by-one, then generation;
 - **pure-CPU reference** — no cuBLASLt, no Triton, no CUDA graphs; a
   completely independent implementation of the same integer semantics
-  (~7 min for its 512 exact integer forwards).
+  (512 exact integer forwards — by far the slowest row to run).
 
 All four print the **same hash**. The same variations applied to the fp16
 model each fork the logits immediately. Output from this repo's A100 box
 (512 generated tokens for every row; artifact `6658cea4dd89c613…`; hashes
 abbreviated):
 
-| model | execution path | logits hash @512 | tokens hash @512 | verdict | time |
-|-------|----------------|------------------|------------------|---------|------|
-| int8 | A100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | baseline | 38 s |
-| int8 | A100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 31 s |
-| int8 | A100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 32 s |
-| int8 | **CPU** (EPYC 7J13, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 391 s |
-| fp16 | A100, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline | 20 s |
-| fp16 | A100, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** | 21 s |
-| fp16 | A100, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** | 20 s |
-| fp16 | **CPU** (EPYC 7J13) | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** | 35 s |
+| model | execution path | logits hash @512 | tokens hash @512 | verdict |
+|-------|----------------|------------------|------------------|---------|
+| int8 | A100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | baseline |
+| int8 | A100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
+| int8 | A100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
+| int8 | **CPU** (EPYC 7J13, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
+| fp16 | A100, batch 1 | `af3ffdc1592d` | `72a290237334` | baseline |
+| fp16 | A100, batch 8 — 7 random co-prompts | `12cf67ceecbb` | `72a290237334` | ❌ logits fork **@ step 0** |
+| fp16 | A100, split prefill + token-by-token | `229b14ee3995` | `72a290237334` | ❌ logits fork **@ step 0** |
+| fp16 | **CPU** (EPYC 7J13) | `02880fd41404` | `72a290237334` | ❌ logits fork **@ step 0** |
 
 The demo prints the exact hardware (GPU model, CPU model, torch version)
 above its table, so results from different machines are self-documenting.
@@ -145,10 +145,10 @@ The cross-machine claim above, actually run. Same artifact
 same 512 steps — on an Apple M5 Max: ARM instead of x86, no CUDA, no
 cuBLASLt, no Triton, a different vendor's silicon and a different BLAS.
 
-| model | execution path | logits hash @512 | tokens hash @512 | verdict | time |
-|-------|----------------|------------------|------------------|---------|------|
-| int8 | **Apple M5 Max** (macOS, reference backend) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to **all four** A100-box int8 rows | 87 s |
-| fp16 | **Apple M5 Max** (macOS, CPU) | `54ed3db507f9` | `cfd92a5775a2` | ❌ logits **and tokens** differ from every A100-box float row | 125 s |
+| model | execution path | logits hash @512 | tokens hash @512 | verdict |
+|-------|----------------|------------------|------------------|---------|
+| int8 | **Apple M5 Max** (macOS, reference backend) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to **all four** A100-box int8 rows |
+| fp16 | **Apple M5 Max** (macOS, CPU) | `54ed3db507f9` | `cfd92a5775a2` | ❌ logits **and tokens** differ from every A100-box float row |
 
 The int8 row is the thesis at full strength: **NVIDIA tensor cores, an x86
 EPYC 7J13, and an Apple M5 Max — three vendors, three instruction sets,
@@ -170,12 +170,6 @@ below](#second-nvidia-generation-h100-and-intel-xeon-verified) now records
 those windows. The 28× margin was never a guarantee, only one machine's
 luck.
 
-Incidentally, the two timings inform the performance story from the other
-direction: on Apple silicon the exact-integer path (87 s) beats the fp16
-baseline (125 s), having been **4.5× faster than the same integer path on
-the EPYC** (391 s). fp16 goes the other way — 125 s here vs 35 s on the
-EPYC — because CPUs have no native fp16 math to fall back on.
-
 ### Second NVIDIA generation: H100 and Intel Xeon (verified)
 
 Same artifact (`6658cea4dd89c613…`), same prompt, same 512 steps, on a
@@ -183,16 +177,16 @@ Lambda Labs H100 box — Hopper tensor cores instead of Ampere, and an Intel
 Xeon Platinum 8480+ instead of the EPYC 7J13, so *both* halves of the
 machine differ from the box at the top. Full table, torch 2.13.0+cu130:
 
-| model | execution path | logits hash @512 | tokens hash @512 | verdict | time |
-|-------|----------------|------------------|------------------|---------|------|
-| int8 | H100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to the A100 box **and** the M5 Max | 62 s |
-| int8 | H100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 75 s |
-| int8 | H100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 47 s |
-| int8 | **CPU** (Xeon Platinum 8480+, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps | 348 s |
-| fp16 | H100, batch 1 | `88b7a5544ac5` | `72a290237334` | ❌ logits differ from the A100 box's fp16 **baseline** | 36 s |
-| fp16 | H100, batch 8 — 7 random co-prompts | `b1a5a93c743d` | `72a290237334` | ❌ logits fork **@ step 0** | 37 s |
-| fp16 | H100, split prefill + token-by-token | `246e001ebbfd` | `72a290237334` | ❌ logits fork **@ step 0** | 14 s |
-| fp16 | **CPU** (Xeon Platinum 8480+) | `22af55b4f422` | `72a290237334` | ❌ logits fork **@ step 0** | 16 s |
+| model | execution path | logits hash @512 | tokens hash @512 | verdict |
+|-------|----------------|------------------|------------------|---------|
+| int8 | H100, batch 1 (graphed) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical to the A100 box **and** the M5 Max |
+| int8 | H100, batch 8 — 7 **random** co-prompts | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
+| int8 | H100, split prefill + token-by-token | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
+| int8 | **CPU** (Xeon Platinum 8480+, independent code path) | `64430dd985f8` | `e28d5cc924e9` | ✅ bit-identical, 512/512 steps |
+| fp16 | H100, batch 1 | `88b7a5544ac5` | `72a290237334` | ❌ logits differ from the A100 box's fp16 **baseline** |
+| fp16 | H100, batch 8 — 7 random co-prompts | `b1a5a93c743d` | `72a290237334` | ❌ logits fork **@ step 0** |
+| fp16 | H100, split prefill + token-by-token | `246e001ebbfd` | `72a290237334` | ❌ logits fork **@ step 0** |
+| fp16 | **CPU** (Xeon Platinum 8480+) | `22af55b4f422` | `72a290237334` | ❌ logits fork **@ step 0** |
 
 Four more execution paths, the same hash. The int8 claim now stands on
 **five distinct pieces of silicon** — NVIDIA Ampere, NVIDIA Hopper, an AMD
@@ -218,14 +212,10 @@ matched — so this box's `@64` / `@128` / `@256` fp16 token hashes
 One more fp16 run on the M5 Max would now bracket its token divergence to
 one of those windows.
 
-Timing caveat: the two CPU rows are directly comparable to the A100 box
-(the Xeon beats the EPYC — 348 s vs 391 s int8, 16 s vs 35 s fp16), but the
-CUDA rows are not. Each first-of-its-kind config here paid a cold
-inductor-cache and CUDA-graph warmup that the later rows reuse, which is
-why `int8-cuda-b1` (62 s) reads slower than `int8-cuda-split` (47 s) on the
-same box. For clean throughput numbers use `scripts/bench.py`, not the
-demo — the full grid for this box, plus its WikiText2 perplexity, is in
-[docs/RESULTS.md](docs/RESULTS.md).
+Throughput is measured separately with `scripts/bench.py` — the demo is a
+correctness harness, and its wall-clock is dominated by one-time setup
+rather than decode. This box's decode/prefill grid, plus its WikiText2
+perplexity, is in [docs/RESULTS.md](docs/RESULTS.md).
 
 ```bash
 # full table (~35-40 min; the CPU row dominates)
