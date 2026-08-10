@@ -114,26 +114,18 @@ the reference path only. All three CUDA configurations use CUDA-graphed
 decode. Same artifact `6658cea4dd89c613…` for every row, 512 generated
 tokens for every row, hashes abbreviated:
 
-| model | machine | execution path | logits hash @512 | |
-|-------|---------|----------------|------------------|-|
-| int8 | A100 box | batch 1 | `64430dd985f8` | ✅ |
-| int8 | A100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | ✅ |
-| int8 | A100 box | split prefill + token-by-token | `64430dd985f8` | ✅ |
-| int8 | A100 box | CPU (EPYC 7J13) | `64430dd985f8` | ✅ |
-| int8 | H100 box | batch 1 | `64430dd985f8` | ✅ |
-| int8 | H100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | ✅ |
-| int8 | H100 box | split prefill + token-by-token | `64430dd985f8` | ✅ |
-| int8 | H100 box | CPU (Xeon 8480+) | `64430dd985f8` | ✅ |
-| int8 | M5 Max | CPU (macOS, ARM) | `64430dd985f8` | ✅ |
-| fp16 | A100 box | batch 1 | `af3ffdc1592d` | ❌ |
-| fp16 | A100 box | batch 8 (7 random co-prompts) | `12cf67ceecbb` | ❌ |
-| fp16 | A100 box | split prefill + token-by-token | `229b14ee3995` | ❌ |
-| fp16 | A100 box | CPU (EPYC 7J13) | `02880fd41404` | ❌ |
-| fp16 | H100 box | batch 1 | `88b7a5544ac5` | ❌ |
-| fp16 | H100 box | batch 8 (7 random co-prompts) | `b1a5a93c743d` | ❌ |
-| fp16 | H100 box | split prefill + token-by-token | `246e001ebbfd` | ❌ |
-| fp16 | H100 box | CPU (Xeon 8480+) | `22af55b4f422` | ❌ |
-| fp16 | M5 Max | CPU (macOS, ARM) | `54ed3db507f9` | ❌ |
+| machine | execution path | int8 hash @512 | fp16 hash @512 |
+|---------|----------------|----------------|----------------|
+| A100 box | batch 1 | `64430dd985f8` | `af3ffdc1592d` |
+| A100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | `12cf67ceecbb` |
+| A100 box | split prefill + token-by-token | `64430dd985f8` | `229b14ee3995` |
+| A100 box | CPU (EPYC 7J13) | `64430dd985f8` | `02880fd41404` |
+| H100 box | batch 1 | `64430dd985f8` | `88b7a5544ac5` |
+| H100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | `b1a5a93c743d` |
+| H100 box | split prefill + token-by-token | `64430dd985f8` | `246e001ebbfd` |
+| H100 box | CPU (Xeon 8480+) | `64430dd985f8` | `22af55b4f422` |
+| M5 Max | CPU (macOS, ARM) | `64430dd985f8` | `54ed3db507f9` |
+| | | **1 unique hash** ✅ | **9 unique hashes** ❌ |
 
 **Nine int8 runs, one logits hash. Nine fp16 runs, nine.**
 
@@ -145,7 +137,7 @@ backend runs the same integer semantics entirely through plain CPU integer
 ops — no cuBLASLt, no Triton, no CUDA graphs. Nothing was tuned per-platform
 to make it happen; the arithmetic simply has no freedom left to disagree.
 
-Every fp16 row forks instead, and forks **at step 0** — different reduction
+Every fp16 run forks instead, and forks **at step 0** — different reduction
 orders in different kernels, chosen by batch shape, by prefill-vs-decode
 split, by GPU generation, and by vendor. The CPU rows additionally use a
 different internal accumulation path, since CPUs don't natively execute
