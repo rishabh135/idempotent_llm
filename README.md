@@ -97,53 +97,53 @@ to a summer's day?"), greedy-generates 512 tokens, and chain-hashes the raw
 int32 logits of every step (plus the token ids, separately). It then runs
 that same computation through radically different execution paths:
 
-- **batch 1** on CUDA (graphed decode);
+- **batch 1** on CUDA;
 - **batch 8**, the sonnet sharing a batch with 7 *random junk co-prompts*
   (row 0 extracted) — different GEMM shapes, different co-batched data;
 - **split prefill/decode** — 32 tokens prefilled at once, 32 fed
   one-by-one, then generation;
-- **pure-CPU reference** — no cuBLASLt, no Triton, no CUDA graphs; a
-  completely independent implementation of the same integer semantics
+- **pure-CPU reference** — the same integer semantics executed through an
+  entirely different kernel stack: no cuBLASLt, no Triton, no CUDA graphs
   (512 exact integer forwards — by far the slowest row to run).
 
 Those variations are then run on three machines that share no silicon: an
 **A100 box** (Ampere tensor cores + an AMD EPYC 7J13), an **H100 box**
 (Hopper + an Intel Xeon Platinum 8480+), and an **Apple M5 Max** (ARM,
 macOS). The two NVIDIA boxes run all four; the Mac has no CUDA, so it runs
-the reference path only. Same artifact `6658cea4dd89c613…` for every row,
-512 generated tokens for every row, hashes abbreviated:
+the reference path only. All three CUDA configurations use CUDA-graphed
+decode. Same artifact `6658cea4dd89c613…` for every row, 512 generated
+tokens for every row, hashes abbreviated:
 
 | model | machine | execution path | logits hash @512 | |
 |-------|---------|----------------|------------------|-|
-| int8 | A100 box | batch 1 (graphed) | `64430dd985f8` | ✅ |
-| int8 | A100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | ✅ |
+| int8 | A100 box | batch 1 | `64430dd985f8` | ✅ |
+| int8 | A100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | ✅ |
 | int8 | A100 box | split prefill + token-by-token | `64430dd985f8` | ✅ |
-| int8 | A100 box | **CPU** reference (EPYC 7J13) | `64430dd985f8` | ✅ |
-| int8 | H100 box | batch 1 (graphed) | `64430dd985f8` | ✅ |
-| int8 | H100 box | batch 8 — 7 **random** co-prompts | `64430dd985f8` | ✅ |
+| int8 | A100 box | CPU (EPYC 7J13) | `64430dd985f8` | ✅ |
+| int8 | H100 box | batch 1 | `64430dd985f8` | ✅ |
+| int8 | H100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | ✅ |
 | int8 | H100 box | split prefill + token-by-token | `64430dd985f8` | ✅ |
-| int8 | H100 box | **CPU** reference (Xeon 8480+) | `64430dd985f8` | ✅ |
-| int8 | **M5 Max** | **CPU** reference (macOS, ARM) | `64430dd985f8` | ✅ |
+| int8 | H100 box | CPU (Xeon 8480+) | `64430dd985f8` | ✅ |
+| int8 | M5 Max | CPU (macOS, ARM) | `64430dd985f8` | ✅ |
 | fp16 | A100 box | batch 1 | `af3ffdc1592d` | ❌ |
-| fp16 | A100 box | batch 8 — 7 random co-prompts | `12cf67ceecbb` | ❌ |
+| fp16 | A100 box | batch 8 (7 random co-prompts) | `12cf67ceecbb` | ❌ |
 | fp16 | A100 box | split prefill + token-by-token | `229b14ee3995` | ❌ |
-| fp16 | A100 box | **CPU** (EPYC 7J13) | `02880fd41404` | ❌ |
+| fp16 | A100 box | CPU (EPYC 7J13) | `02880fd41404` | ❌ |
 | fp16 | H100 box | batch 1 | `88b7a5544ac5` | ❌ |
-| fp16 | H100 box | batch 8 — 7 random co-prompts | `b1a5a93c743d` | ❌ |
+| fp16 | H100 box | batch 8 (7 random co-prompts) | `b1a5a93c743d` | ❌ |
 | fp16 | H100 box | split prefill + token-by-token | `246e001ebbfd` | ❌ |
-| fp16 | H100 box | **CPU** (Xeon 8480+) | `22af55b4f422` | ❌ |
-| fp16 | **M5 Max** | **CPU** (macOS, ARM) | `54ed3db507f9` | ❌ |
+| fp16 | H100 box | CPU (Xeon 8480+) | `22af55b4f422` | ❌ |
+| fp16 | M5 Max | CPU (macOS, ARM) | `54ed3db507f9` | ❌ |
 
 **Nine int8 runs, one logits hash. Nine fp16 runs, nine.**
 
 The int8 column is the thesis at full strength: **NVIDIA Ampere, NVIDIA
 Hopper, an AMD EPYC, an Intel Xeon, and an Apple M5 Max — four vendors and
 three instruction sets — emit the same 512-step logits hash, bit for
-bit.** Three of those rows come from a completely independent implementation
-of the same integer semantics: the reference backend shares no kernel with
-the CUDA one — no cuBLASLt, no Triton, no CUDA graphs. Nothing was tuned
-per-platform to make it happen; the arithmetic simply has no freedom left
-to disagree.
+bit.** Three of those rows share no kernel with the CUDA ones: the reference
+backend runs the same integer semantics entirely through plain CPU integer
+ops — no cuBLASLt, no Triton, no CUDA graphs. Nothing was tuned per-platform
+to make it happen; the arithmetic simply has no freedom left to disagree.
 
 Every fp16 row forks instead, and forks **at step 0** — different reduction
 orders in different kernels, chosen by batch shape, by prefill-vs-decode
