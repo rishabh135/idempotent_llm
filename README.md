@@ -114,17 +114,17 @@ the reference path only. All three CUDA configurations use CUDA-graphed
 decode. Same artifact `6658cea4dd89c613…` for every row, 512 generated
 tokens for every row, hashes abbreviated:
 
-| machine | execution path | int8 hash @512 | fp16 hash @512 |
-|---------|----------------|----------------|----------------|
-| A100 box | batch 1 | `64430dd985f8` | `af3ffdc1592d` |
-| A100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | `12cf67ceecbb` |
-| A100 box | split prefill + token-by-token | `64430dd985f8` | `229b14ee3995` |
-| A100 box | CPU (EPYC 7J13) | `64430dd985f8` | `02880fd41404` |
-| H100 box | batch 1 | `64430dd985f8` | `88b7a5544ac5` |
-| H100 box | batch 8 (7 random co-prompts) | `64430dd985f8` | `b1a5a93c743d` |
-| H100 box | split prefill + token-by-token | `64430dd985f8` | `246e001ebbfd` |
-| H100 box | CPU (Xeon 8480+) | `64430dd985f8` | `22af55b4f422` |
-| M5 Max | CPU (macOS, ARM) | `64430dd985f8` | `54ed3db507f9` |
+| device | configuration | int8 hash @512 | fp16 hash @512 |
+|--------|---------------|----------------|----------------|
+| A100 | batch 1 | `64430dd985f8` | `af3ffdc1592d` |
+| A100 | batch 8 (7 random co-prompts) | `64430dd985f8` | `12cf67ceecbb` |
+| A100 | split prefill + token-by-token | `64430dd985f8` | `229b14ee3995` |
+| H100 | batch 1 | `64430dd985f8` | `88b7a5544ac5` |
+| H100 | batch 8 (7 random co-prompts) | `64430dd985f8` | `b1a5a93c743d` |
+| H100 | split prefill + token-by-token | `64430dd985f8` | `246e001ebbfd` |
+| AMD EPYC 7J13 (CPU) | batch 1 | `64430dd985f8` | `02880fd41404` |
+| Intel Xeon 8480+ (CPU) | batch 1 | `64430dd985f8` | `22af55b4f422` |
+| Apple M5 Max (CPU) | batch 1 | `64430dd985f8` | `54ed3db507f9` |
 | | | **1 unique hash** ✅ | **9 unique hashes** ❌ |
 
 **Nine int8 runs, one logits hash. Nine fp16 runs, nine.**
