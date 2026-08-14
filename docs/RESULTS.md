@@ -90,6 +90,12 @@ the entire suite, including check 5's slow 4k long-context test
 tests there, not the 9 recorded above; `test_determinism.py` gained two
 since that line was written.
 
+Full suite on the A100 / EPYC 7J13 box (torch 2.13.0+cu130, same artifact):
+`make test-all` is **`79 passed in 761s`** — the same 79 tests as the H100
+row, including the slow 4k long-context check. The wall-clock difference
+between the two boxes is the CPU cross-device check (600 full reference
+forwards), not the GPU work.
+
 ## §10 Performance
 
 A100, measured with `scripts/bench.py`. Three int8 configurations, each
