@@ -59,8 +59,10 @@ Purely a memory-safety fix; zero effect on computed values.
    tightly, making static K scales well-conditioned; V ranges are calibrated
    with margin. Q stays dynamic per-token (its scale is on the row dim and
    factors out of the score row).
-2. **1/√d is folded into the static K scale offline** (spec suggested a
-   runtime shift; folding is exact for any d, not just powers of two).
+2. **1/√d is folded into a static per-(layer, head) score scale offline**
+   (`ks_m/ks_k`; K's per-channel cache scale carries the QK-smoothing
+   factor). Spec suggested a runtime shift; folding is exact for any d,
+   not just powers of two.
 3. **Hidden-dim RMSNorm γ is folded into the *following* linear's weight
    columns offline** (attn-norm → q/k/v, mlp-norm → gate/up, final-norm →
    LM head), not into the norm output scale: γ is per-channel and the norm
@@ -77,11 +79,12 @@ Purely a memory-safety fix; zero effect on computed values.
    is implemented for the §9.2 ablation only. (Spec pre-approved c=15 vs ∞
    as an 8-bit-insensitive choice; we default to ∞ and verify.)
 5. **Embedding table quantized per-row (per vocab id)**, not per-channel:
-   after lookup a row IS the token, so this is per-token quantization, and
-   the same int8 tensor + per-row scales serves as the per-output-channel
-   LM head weight (tied). Final-norm γ folded into a separate LM-head copy
-   of the embedding (γ-fold would corrupt lookups if applied to the shared
-   tensor).
+   after lookup a row IS the token, so this is per-token quantization. The
+   LM head is a second, per-output-channel int8 quantization of the same
+   tied float weight, with final-norm γ folded into that separate copy
+   (γ-fold would corrupt lookups if applied to the shared tensor, and the
+   head's scale structure — per-column mantissas, one shared shift —
+   differs from the embedding's per-row m and k).
 6. **Attention probs are 15-bit, not the paper's u8** (see Accuracy
    findings: 7-bit probabilities cost ~2 PPL once scores are accurate).
    p = hi·2^7 + lo with hi ∈ [0,128] and lo ∈ [0,127]; P@V = (hi@V << 7) +
@@ -151,7 +154,7 @@ sigmoid denominators share it), so it cancels and never propagates.
 int32 data, per-token power-of-two scale (m = 1, k_res per token).
 Deltas (m_d, k_d) align by d·m_d (int64) then shift to k_res
 (right = rshift_round, left = exact); after each add the row renormalizes
-max|h| into [2^24, 2^30) by exact left shifts / rounded right shifts,
+max|h| into [2^26, 2^30) by exact left shifts / rounded right shifts,
 adjusting k_res. Everything is per-token → batch and prefill/decode
 invariant by construction.
 

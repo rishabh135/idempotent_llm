@@ -225,10 +225,10 @@ def calibrate_kv_ranges(model, tok, device, n_samples: int, seq_len: int):
 # Main
 # ---------------------------------------------------------------------------
 
-def prepare(out_dir: str, calib_samples: int = 16, calib_len: int = 512,
+def prepare(out_dir: str, calib_samples: int = 48, calib_len: int = 1024,
             kv_margin: float = 1.05, device: str = "cuda",
-            smooth_o: bool = True, weight_bits: int = 8,
-            qk_alpha: float = 0.5):
+            smooth_o: bool = True, smooth_acts: bool = True,
+            weight_bits: int = 8, qk_alpha: float = 0.3):
     from safetensors.torch import save_file
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -285,6 +285,11 @@ def prepare(out_dir: str, calib_samples: int = 16, calib_len: int = 512,
         s_used = 1.0 / (inv_m.double() * 2.0 ** -inv_k)
         return inv_m, inv_k, s_used
 
+    def identity_smoothing(n: int):
+        """No-op factors (for the §9.2 "- activation smoothing" ablation)."""
+        return (torch.ones(n, dtype=torch.int64), 0,
+                torch.ones(n, dtype=torch.float64))
+
     tensors: dict[str, torch.Tensor] = {}
     scalars: dict = {
         "model_id": MODEL_ID,
@@ -293,6 +298,11 @@ def prepare(out_dir: str, calib_samples: int = 16, calib_len: int = 512,
         "vocab": vocab, "max_pos": int(cfg.max_position_embeddings),
         "rope_frac_bits": ROPE_FRAC_BITS,
         "eos_token_id": int(cfg.eos_token_id),
+        # build parameters (documentation only; runtime ignores them)
+        "calib_samples": calib_samples, "calib_len": calib_len,
+        "kv_margin": kv_margin, "qk_alpha": qk_alpha,
+        "smooth_o": smooth_o, "smooth_acts": smooth_acts,
+        "weight_bits": weight_bits,
         "layers": [],
     }
 
@@ -335,16 +345,19 @@ def prepare(out_dir: str, calib_samples: int = 16, calib_len: int = 512,
         Wq = attn.q_proj.weight.detach().double() * g_attn.double()[None, :]
         Wk = attn.k_proj.weight.detach().double() * g_attn.double()[None, :]
         Wv = attn.v_proj.weight.detach().double() * g_attn.double()[None, :]
-        as_m, as_k, s_attn = act_smoothing(attn_in_max[i], [Wq, Wk, Wv])
+        as_m, as_k, s_attn = (act_smoothing(attn_in_max[i], [Wq, Wk, Wv])
+                              if smooth_acts else identity_smoothing(hidden))
         tensors[p + "as_m"] = as_m
         L["as_k"] = as_k
         Wg = mlp.gate_proj.weight.detach().double() * g_mlp.double()[None, :]
         Wu = mlp.up_proj.weight.detach().double() * g_mlp.double()[None, :]
-        ms_m, ms_k, s_mlp = act_smoothing(mlp_in_max[i], [Wg, Wu])
+        ms_m, ms_k, s_mlp = (act_smoothing(mlp_in_max[i], [Wg, Wu])
+                             if smooth_acts else identity_smoothing(hidden))
         tensors[p + "ms_m"] = ms_m
         L["ms_k"] = ms_k
         Wd = mlp.down_proj.weight.detach().double()
-        ds_m, ds_k, s_down = act_smoothing(down_in_max[i], [Wd])
+        ds_m, ds_k, s_down = (act_smoothing(down_in_max[i], [Wd])
+                              if smooth_acts else identity_smoothing(inter))
         tensors[p + "ds_m"] = ds_m
         L["ds_k"] = ds_k
         Wo = attn.o_proj.weight.detach().double()
@@ -372,10 +385,11 @@ def prepare(out_dir: str, calib_samples: int = 16, calib_len: int = 512,
         L["k_norm_k"] = kg_k
 
         # ---- QK smoothing + static K/V int8 scales -----------------------
-        # Per-channel factors c_d = sqrt(maxK_d / maxQ_d) (α=0.5, clamped to
-        # [2^-6, 2^6]) cancel EXACTLY in the dot product: Q is multiplied by
-        # the dyadic c at runtime (before its dynamic quant), K's static
-        # per-channel scale is c·sK_h. Post-smoothing K ranges are balanced,
+        # Per-channel factors c_d = maxK_d^α / maxQ_d^(1-α) (α=0.3 in the
+        # canonical Makefile build; clamped to [2^-6, 2^6]) cancel EXACTLY in
+        # the dot product: Q is multiplied by the dyadic c at runtime (before
+        # its dynamic quant), K's static per-channel scale is c·sK_h.
+        # Post-smoothing K ranges are balanced,
         # so a per-head base scale sK_h captures every channel well.
         kc = k_maxes[i].double().clamp(min=1e-6)      # [n_kv, hd]
         qc = q_maxes[i].double().clamp(min=1e-6)      # [n_kv, hd]
@@ -420,18 +434,22 @@ def prepare(out_dir: str, calib_samples: int = 16, calib_len: int = 512,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="artifacts/qwen3-0.6b-int8")
-    ap.add_argument("--calib-samples", type=int, default=16)
-    ap.add_argument("--calib-len", type=int, default=512)
+    ap.add_argument("--calib-samples", type=int, default=48)
+    ap.add_argument("--calib-len", type=int, default=1024)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--kv-margin", type=float, default=1.05)
     ap.add_argument("--no-smooth-o", action="store_true")
+    ap.add_argument("--no-smooth-acts", action="store_true",
+                    help="disable attn/mlp/down activation smoothing "
+                         "(the §9.2 ablation; combine with --no-smooth-o)")
     ap.add_argument("--weight-bits", type=int, default=8)
-    ap.add_argument("--qk-alpha", type=float, default=0.5)
+    ap.add_argument("--qk-alpha", type=float, default=0.3)
     args = ap.parse_args()
     prepare(args.out, args.calib_samples, args.calib_len,
             kv_margin=args.kv_margin, device=args.device,
-            smooth_o=not args.no_smooth_o, weight_bits=args.weight_bits,
-            qk_alpha=args.qk_alpha)
+            smooth_o=not args.no_smooth_o,
+            smooth_acts=not args.no_smooth_acts,
+            weight_bits=args.weight_bits, qk_alpha=args.qk_alpha)
 
 
 if __name__ == "__main__":

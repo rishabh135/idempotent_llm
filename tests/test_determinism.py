@@ -152,7 +152,7 @@ class TestLongContext:
         for a, b in zip(lb, l1):
             assert torch.equal(a[0].cpu(), b)
 
-        # prefill/decode at the boundary: prefill 8191 then decode 1 == full prefill
+        # prefill/decode at the boundary: prefill 4095 then decode 1 == full prefill
         pos = torch.arange(T).unsqueeze(0).cuda()
         full, _, _, _ = cuda_model.forward(ids.unsqueeze(0).cuda(), pos)
         c = None

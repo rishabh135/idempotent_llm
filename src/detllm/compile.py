@@ -6,9 +6,10 @@ operators instead gives one small fused graph per op, each reused by every
 layer. GEMMs stay on the eager `_int_mm` path (already single kernels).
 
 Bit-exactness contract: fusion must not change results — everything is
-integer arithmetic, so any mismatch is a miscompilation and is caught by
-`tests/test_determinism.py::TestCompiledExactness` plus the §9.3 suite,
-which re-runs against the compiled ops.
+integer arithmetic, so any mismatch is a miscompilation. Verified
+empirically rather than by a dedicated unit test: the §9.3 invariances were
+re-run at every perf stage (RESULTS.md §10), and scripts/demo.py's
+compiled+graphed CUDA rows reproduce the eager CPU reference hash exactly.
 
 Usage: call `compile_ops()` once (idempotent), before or after model
 construction. `dynamic=True` keeps one graph across growing cache lengths.

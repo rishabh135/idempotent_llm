@@ -43,7 +43,7 @@ C4 (validation, 40 segments of 2048, secondary):
 |--------|-----|
 | final (QK smoothing α=0.3, act smoothing, 15-bit probs, calib 48×1024) | 22.34 |
 | − QK smoothing (the original faithful pipeline) | 44.94 |
-| − activation smoothing (QK smoothing only) | 25.19 |
+| − activation smoothing (QK smoothing only; rebuild with `--no-smooth-acts --no-smooth-o`) | 25.19 |
 | 7-bit probs (paper's p_out = 8) instead of 15-bit | 24.71 |
 | QK smoothing α=0.5 instead of 0.3 | 24.71 |
 | QK smoothing α=0.7 | 25.19 |
@@ -173,7 +173,9 @@ How the CUDA-graph decode works (details in NOTES.md):
   but ~200 ms/step of Python orchestration remained;
 - a manual whole-step CUDA graph replays the entire step in one launch;
   static shapes come from bucketed cache capacity + validity masking
-  (invalid slots contribute exact zeros — the same §9.3 masking argument),
+  (invalid slots are excluded from maxima via an integer sentinel and
+  contribute exact zeros to sums and GEMMs — the same §9.3 masking
+  argument),
   cache writes via `index_copy_` at a device-tensor offset;
 - decode attention avoids GQA `repeat_interleave` copies via broadcasting
   and computes 15-bit probs·V in one int32-multiply/int64-accumulate pass

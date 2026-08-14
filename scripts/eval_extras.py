@@ -1,7 +1,7 @@
 """§9.2 extras: C4 secondary PPL, softmax-clip ablation, qualitative prompts.
 
 Usage:
-  uv run python scripts/eval_extras.py --what c4 [--limit 20]
+  uv run python scripts/eval_extras.py --what c4 --limit 40
   uv run python scripts/eval_extras.py --what clip --limit 5
   uv run python scripts/eval_extras.py --what qual
 """

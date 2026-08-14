@@ -168,12 +168,12 @@ def requant_i8_static(P: torch.Tensor, row_m, row_k, col_m, col_k: int,
 # ---------------------------------------------------------------------------
 
 RES_MAX_BITS = 30  # keep max|h| < 2^30
-RES_MIN_BITS = 24  # upshift (exact) if max|h| < 2^24
+RES_MIN_BITS = 24  # upshift (exact) targets MSB RES_MIN_BITS+2 = 26
 
 
 def residual_renorm(h64: torch.Tensor, k_res: torch.Tensor):
-    """Bring per-row max|h| into [2^RES_MIN_BITS, 2^RES_MAX_BITS), adjusting
-    k_res. Left shifts are exact; right shifts use rshift_round."""
+    """Bring per-row max|h| into [2^26, 2^RES_MAX_BITS) (nonzero rows),
+    adjusting k_res. Left shifts are exact; right shifts use rshift_round."""
     g = h64.abs().amax(dim=-1, keepdim=True)
     lg = ilog2_floor(torch.clamp(g, min=1))
     sh_down = torch.clamp(lg - (RES_MAX_BITS - 1), min=0)

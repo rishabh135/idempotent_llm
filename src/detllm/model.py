@@ -28,7 +28,7 @@ import torch
 from . import dyadic as dy
 from .backends import int_gemm, int_gemm_u16i8
 from .guard import NoFloatMode
-from .intmath import clamp_i8, lshift_t, round_half_away_div
+from .intmath import ashr, clamp_i8, lshift_t, round_half_away_div
 from .ops.di_rmsnorm import OUT_FRAC_BITS, di_rmsnorm, di_rmsnorm_gamma
 from .ops.di_softmax import P_OUT_BITS, di_softmax
 from .ops.di_swiglu import di_swiglu
@@ -352,7 +352,7 @@ class IntQwen3:
                 sk = qk + L.ks_k.repeat_interleave(group).view(1, self.n_q, 1, 1)
                 sm, sk = dy.norm_scale(sm, sk)
                 # per-row DI-Exp constant, same ops as di_exp()
-                m_f = sm + (sm >> 1) - (sm >> 4)
+                m_f = sm + ashr(sm, 1) - ashr(sm, 4)
                 one = torch.ones_like(sk)
                 tpos = torch.clamp(
                     round_half_away_div(lshift_t(one, sk), m_f), min=1)

@@ -18,7 +18,8 @@ Bit-exactness contract: every arithmetic step reproduces the eager path
   floor-vs-truncation ambiguity cannot arise.
 - p = (ex<<14 + denom>>1) // denom ≡ round_half_away_div(ex<<14, denom)
   for non-negative operands, denom clamped ≥ 1.
-- Invalid slots contribute exactly 0 to max (sentinel), denom, and output.
+- Invalid slots are excluded from the max (integer sentinel) and contribute
+  exactly 0 to denom and output.
 
 Reduction order inside tl.sum/tl.max varies with launch config, but every
 reduction here is an integer sum/max — associative and commutative — so any
