@@ -241,6 +241,10 @@ FLOAT_CONFIGS = ["fp16-cuda-b1", "fp16-cuda-b8", "fp16-cuda-split",
                  "fp16-cpu-b1"]
 
 
+def needs_cuda(config: str) -> bool:
+    return "cuda" in config
+
+
 def run_config(name: str, steps: int, artifact: str):
     t0 = time.perf_counter()
     if name.startswith("int8"):
@@ -285,7 +289,8 @@ def main():
     import hashlib as _h
     with open(f"{args.artifact}/model.safetensors", "rb") as f:
         art_sha = _h.sha256(f.read()).hexdigest()
-    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none"
+    have_cuda = torch.cuda.is_available()
+    gpu = torch.cuda.get_device_name(0) if have_cuda else "none"
     cpu = "unknown"
     try:
         for line in open("/proc/cpuinfo"):
@@ -306,6 +311,12 @@ def main():
     print(f"hardware: GPU={gpu} | CPU={cpu} | torch {torch.__version__}\n")
 
     if args.config:
+        if needs_cuda(args.config) and not have_cuda:
+            ap.error(f"--config {args.config} requires CUDA, but torch "
+                     f"{torch.__version__} reports none available on this "
+                     f"machine (no GPU, or a CPU-only torch build). Use "
+                     f"--config int8-cpu-b1 (or fp16-cpu-b1) instead — see "
+                     f"the README's 'On Apple silicon' note.")
         steps = args.steps
         tc, lc, dt = run_config(args.config, steps, args.artifact)
         print(f"{args.config}  ({steps} tokens, {dt:.0f}s)")
@@ -316,8 +327,15 @@ def main():
             print(f"  @{n:<4} tokens {tc.at[n]}   logits {lc.at[n]}")
         return
 
-    results = {}
     configs = list(INT8_CONFIGS) + ([] if args.skip_fp16 else FLOAT_CONFIGS)
+    if not have_cuda:
+        skipped = [c for c in configs if needs_cuda(c)]
+        configs = [c for c in configs if not needs_cuda(c)]
+        print(f"no CUDA detected — skipping {len(skipped)} CUDA-only "
+              f"config(s): {', '.join(skipped)}\n"
+              f"running the CPU-only config(s) instead: {', '.join(configs)}\n")
+
+    results = {}
     for name in configs:
         steps = args.steps
         print(f"running {name} ({steps} tokens)...", flush=True)
@@ -326,7 +344,6 @@ def main():
     cols = sorted({n for _, lc, _ in results.values() for n in lc.at})
     hdr = "".join(f"{'@%d tok/logits' % n:<34}" for n in cols)
     print(f"\n{'config':<22} {hdr}")
-    base_int = results["int8-cuda-b1"]
     for name in configs:
         tc, lc, dt = results[name]
         cells = "".join(
@@ -336,21 +353,30 @@ def main():
 
     print()
     ok = True
-    for name in INT8_CONFIGS[1:]:
-        if name not in results:
+    # compare every int8 config against the first one that actually ran
+    # (normally int8-cuda-b1; falls back to int8-cpu-b1 when CUDA is absent)
+    base_name = next((c for c in INT8_CONFIGS if c in results), None)
+    base_int = results[base_name] if base_name else None
+    for name in INT8_CONFIGS:
+        if name == base_name or name not in results:
             continue
         div = first_divergence(base_int[1], results[name][1])
         n = min(len(base_int[1].steps), len(results[name][1].steps))
         if div is None:
-            print(f"int8: {name} == int8-cuda-b1 for all {n} compared steps ✓")
+            print(f"int8: {name} == {base_name} for all {n} compared steps ✓")
         else:
-            print(f"int8: {name} DIVERGED from int8-cuda-b1 at step {div} ✗")
+            print(f"int8: {name} DIVERGED from {base_name} at step {div} ✗")
             ok = False
     if not args.skip_fp16:
         pairs = [("fp16-cuda-b8", "fp16-cuda-b1"),
                  ("fp16-cuda-split", "fp16-cuda-b1"),
                  ("fp16-cpu-b1", "fp16-cuda-b1")]  # same dtype, hw only
+        if not have_cuda:
+            print("float cross-checks need a CUDA baseline (fp16-cuda-b1) — "
+                  "skipped on this machine")
         for name, base in pairs:
+            if name not in results or base not in results:
+                continue
             ldiv = first_divergence(results[base][1], results[name][1])
             tdiv = first_divergence(results[base][0], results[name][0])
             lw = f"logits diverged @ step {ldiv}" if ldiv is not None else "logits identical"
