@@ -179,6 +179,14 @@ uv run python scripts/demo.py --config int8-cpu-b1
 uv run python scripts/demo.py --config int8-cuda-b1
 ```
 
+No CUDA (e.g. Apple silicon, or any CPU-only torch build)? The bare
+`uv run python scripts/demo.py` above auto-detects this via
+`torch.cuda.is_available()` and runs only the two CPU-capable rows
+(`int8-cpu-b1`, `fp16-cpu-b1`), printing which CUDA-only configs it skipped
+and why — no manual flags needed. Explicitly requesting a CUDA config with
+`--config` on such a machine fails fast with that same explanation instead
+of a raw `torch.cuda` traceback.
+
 Cross-machine runs: **use the published artifact, never re-run
 `make prepare`** — preparation is the float stage and is not required to
 be bit-reproducible across machines. The exact artifact used for the
@@ -190,17 +198,73 @@ hf download nathanbarry/detllm-qwen3-0.6b-int8 --local-dir artifacts/qwen3-0.6b-
 
 The demo prints `sha256(model.safetensors)` on startup (this artifact:
 `6658cea4dd89c613…`); two machines are only comparable when it matches.
-On Apple silicon, run the `int8-cpu-b1` config — the reference backend is
-the Apple path per the spec, and it is the M5 Max row in the table above.
+On Apple silicon this is the `int8-cpu-b1` config (selected automatically,
+per above) — the reference backend is the Apple path per the spec, and it
+is the M5 Max row in the table above.
+
+## Quantization report: exactly what's on disk, layer by layer
+
+`scripts/quant_report.py` answers "how much does each layer actually cost"
+straight from the artifact — it parses the safetensors *header* and
+`config.json` only (no weights loaded, no model instantiated), so it runs in
+well under a second — and prints:
+
+- a **per-layer table**, all 28 transformer layers: parameter count, on-disk
+  bytes, effective bits/parameter, and the worst-case per-channel
+  weight-scale error calibrated for that layer (`0.5/min_m`, the bound
+  `prepare.py` itself asserts stays `< 0.2%` for every channel of every
+  weight);
+- a **per-component table** across every layer (Q/K/V/O/gate/up/down weights
+  and their scales, QK-Norm gammas, activation-smoothing factors, KV-cache
+  scales) with the exact quantization scheme for each, in the `(data, m, k)`
+  dyadic convention from [`dyadic.py`](src/detllm/dyadic.py);
+- a **dtype breakdown** (int8/int16/int64) and the **net size ratio**
+  against an equivalent fp16/fp32 checkpoint of the same architecture.
+
+```bash
+uv run python scripts/quant_report.py
+uv run python scripts/quant_report.py --full   # + one row per raw tensor (~760 rows)
+```
+
+On the published `qwen3-0.6b-int8` artifact (28 layers, hidden 1024, 16/8
+GQA heads, head_dim 128, intermediate 3072, vocab 151,936):
+
+| | |
+|---|---|
+| logical weight parameters stored | 751,566,848 |
+| — of which `embed.e8` + `head.w8t` | 311,164,928 (41%) |
+| original checkpoint parameters (tied, bf16) | 596,049,920 |
+| artifact size on disk | 745.10 MB |
+| effective bits / weight parameter | 8.32 (8b weight + 0.32b scale overhead) |
+| size vs. equivalent fp16 checkpoint | **1.53× smaller** |
+| size vs. equivalent fp32 checkpoint | **3.05× smaller** |
+
+Two things only show up once you look past the headline ratio. **The LM
+head isn't tied on disk:** Qwen3-0.6B ties the embedding and head weights,
+but this artifact quantizes them separately (the head has the final-norm γ
+folded in, the raw embedding doesn't), so `embed.e8` + `head.w8t` alone
+account for 311M of the 751M stored weight elements — which is why the
+disk savings land at 1.53×/3.05× rather than the "int8 ⇒ 2×/4×"
+back-of-envelope. **RoPE's cos/sin table costs more than every quantization
+scale combined:** 20 MB (int16, `[40960, 128]` × 2, sized for the full
+40,960-token context window) versus 8.35 MB for all 563 per-channel
+scale/mantissa tensors across all 28 layers.
+
+The per-layer weight-scale error is calibration-dependent, not structural:
+every layer stores exactly the same 15,728,640 weight parameters (15.17 MB,
+8.09 bits/param), but the worst-case relative error observed at prep time
+ranges from 0.006% (layer 6, MLP) to 0.161% (layer 21, attention) — both
+comfortably inside the 0.2% bound.
 
 ## Usage
 
 ```bash
 uv sync
-make prepare    # one-time: build artifacts/qwen3-0.6b-int8 (needs GPU + HF)
-make test       # unit + golden + fast determinism checks
-make test-all   # + 4k-long-context checks
-make ppl        # full WikiText2 perplexity
+make prepare       # one-time: build artifacts/qwen3-0.6b-int8 (needs GPU + HF)
+make test          # unit + golden + fast determinism checks
+make test-all      # + 4k-long-context checks
+make ppl           # full WikiText2 perplexity
+make quant-report  # per-layer quantization + storage breakdown (this section)
 ```
 
 Generate (greedy, deterministic):
