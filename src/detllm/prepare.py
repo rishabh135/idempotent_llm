@@ -228,13 +228,16 @@ def calibrate_kv_ranges(model, tok, device, n_samples: int, seq_len: int):
 def prepare(out_dir: str, calib_samples: int = 48, calib_len: int = 1024,
             kv_margin: float = 1.05, device: str = "cuda",
             smooth_o: bool = True, smooth_acts: bool = True,
-            weight_bits: int = 8, qk_alpha: float = 0.3):
+            weight_bits: int = 8, qk_alpha: float = 0.3,
+            model_id: str = MODEL_ID):
+    """model_id: HF hub id or local checkpoint dir to quantize (e.g. an
+    abliteration/ output directory) — same Qwen3 architecture assumed."""
     from safetensors.torch import save_file
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     os.makedirs(out_dir, exist_ok=True)
-    tok = AutoTokenizer.from_pretrained(MODEL_ID)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32)
+    tok = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float32)
     model.eval().to(device)
     cfg = model.config
 
@@ -292,7 +295,7 @@ def prepare(out_dir: str, calib_samples: int = 48, calib_len: int = 1024,
 
     tensors: dict[str, torch.Tensor] = {}
     scalars: dict = {
-        "model_id": MODEL_ID,
+        "model_id": model_id,
         "n_layers": n_layers, "hidden": hidden, "n_q_heads": n_q,
         "n_kv_heads": n_kv, "head_dim": hd, "intermediate": inter,
         "vocab": vocab, "max_pos": int(cfg.max_position_embeddings),
@@ -444,12 +447,16 @@ def main():
                          "(the §9.2 ablation; combine with --no-smooth-o)")
     ap.add_argument("--weight-bits", type=int, default=8)
     ap.add_argument("--qk-alpha", type=float, default=0.3)
+    ap.add_argument("--model-id", default=MODEL_ID,
+                    help="HF hub id or local checkpoint dir to quantize "
+                         "(e.g. an abliteration/ output directory)")
     args = ap.parse_args()
     prepare(args.out, args.calib_samples, args.calib_len,
             kv_margin=args.kv_margin, device=args.device,
             smooth_o=not args.no_smooth_o,
             smooth_acts=not args.no_smooth_acts,
-            weight_bits=args.weight_bits, qk_alpha=args.qk_alpha)
+            weight_bits=args.weight_bits, qk_alpha=args.qk_alpha,
+            model_id=args.model_id)
 
 
 if __name__ == "__main__":
