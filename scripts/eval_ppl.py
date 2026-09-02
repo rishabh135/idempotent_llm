@@ -53,14 +53,15 @@ def eval_int(segments, backend: str, artifact: str, model=None):
     return math.exp(total_nll / total_tok)
 
 
-def eval_float(segments, dtype):
+def eval_float(segments, dtype, model_id="Qwen/Qwen3-0.6B",
+              device="cuda" if torch.cuda.is_available() else "cpu"):
     from transformers import AutoModelForCausalLM
     model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen3-0.6B", dtype=dtype).eval().cuda()
+        model_id, dtype=dtype).eval().to(device)
     total_nll, total_tok = 0.0, 0
     with torch.no_grad():
         for si, seg in enumerate(segments):
-            ids = seg.unsqueeze(0).cuda()
+            ids = seg.unsqueeze(0).to(device)
             out = model(ids)
             lp = torch.log_softmax(out.logits[0, :-1].float(), dim=-1)
             nll = -lp.gather(1, ids[0, 1:, None]).sum().item()
