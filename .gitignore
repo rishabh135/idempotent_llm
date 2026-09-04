@@ -11,3 +11,8 @@ wheels/
 
 # prepared model artifacts (rebuild with make prepare)
 artifacts/
+
+# llamacpp-quant-lab: local llama.cpp checkout/build + generated run logs
+vendor/
+llamacpp-quant-lab/runs/
+llamacpp-quant-lab/report/interactive/
